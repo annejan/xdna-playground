@@ -70,6 +70,7 @@ driver), the NPU firmware from `linux-firmware`, Python 3.12, `curl`, `unzip`, `
 ```
 cd iron
 ../env.sh python life_window.py                     # 1024 x 768 world in a window
+../env.sh python life_window.py --fit               # fullscreen, world sized to the screen (960 x 600 at 2x on 1920 x 1200)
 ../env.sh python life_chip.py --bench --gens 1001   # the race against numpy
 ../env.sh python life.py --bench 512 2048 --gens 7  # the 8-core version
 ../env.sh python mandel.py                          # Mandelbrot zoom in the terminal

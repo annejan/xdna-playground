@@ -3,6 +3,7 @@
 
   ../env.sh python life_window.py              1024x768 world
   ../env.sh python life_window.py --size 1536 512
+  ../env.sh python life_window.py --fit          fullscreen, the world sized to fill the screen
 
   mouse left / right   draw / erase cells
   space                pause, s = one step while paused
@@ -15,13 +16,14 @@
 """
 
 import argparse
+import math
 import time
 
 import numpy as np
 import pygame
 
 import aie.iron as iron
-from life_chip import Chip
+from life_chip import BAND_MAX, ROWS, Chip
 from patterns import SHAPES, stamp
 
 SPEEDS = [1, 3, 9, 33, 101]
@@ -37,26 +39,62 @@ def lut():
     return np.stack([np.interp(x, pos, [s[1][i] for s in STOPS]) for i in range(3)], -1).astype(np.uint8)
 
 
+def fit_world(dw, dh, cores):
+    """The biggest world that fills a dw x dh screen at a whole scale and still fits on the chip:
+    W a multiple of 64 (the vector kernel), and a band of ceil(H / cores) rows within BAND_MAX."""
+    for s in range(1, 17):
+        w, h = (dw // s) // 64 * 64, dh // s
+        if w >= 64 and math.ceil(h / cores) * w <= BAND_MAX:
+            return w, h
+    raise SystemExit(f"no world fits a {dw}x{dh} screen")
+
+
+def place(screen, vw, vh):
+    """Where the vw x vh world goes on the screen: as big as fits, same aspect ratio, centred.
+    A whole scale when it is at least 2x, so cells stay square and sharp."""
+    sw, sh = screen.get_size()
+    f = min(sw / vw, sh / vh)
+    if f >= 2:
+        f = math.floor(f)
+    w, h = int(vw * f), int(vh * f)
+    return pygame.Rect((sw - w) // 2, (sh - h) // 2, w, h)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--size", nargs=2, type=int, default=(1024, 768), metavar=("W", "H"))
     p.add_argument("--fill", type=float, default=0.3)
     p.add_argument("--fade", type=float, default=0.93, help="how slowly dead cells cool down (0..1)")
+    p.add_argument("--fit", action="store_true", help="fullscreen, with the world sized to fill the screen")
     args = p.parse_args()
 
     dev = iron.get_current_device()
+    pygame.init()
+    dw, dh = pygame.display.get_desktop_sizes()[0]
     speed = 0
-    chip = Chip(*args.size, SPEEDS[speed], dev.cols)
+    if args.fit:
+        vw, vh = fit_world(dw, dh, dev.cols * ROWS)
+        chip = Chip(vw, vh, SPEEDS[speed], dev.cols)  # chip.h may be a few rows more: those stay off screen
+    else:
+        chip = Chip(*args.size, SPEEDS[speed], dev.cols)
+        vw, vh = chip.w, chip.h
     rng = np.random.default_rng()
     cells = (rng.random((chip.h, chip.w)) < args.fill).astype(np.uint8)
     heat = np.zeros(cells.shape, np.float32)
     colors = lut()
 
-    pygame.init()
-    dw, dh = pygame.display.get_desktop_sizes()[0]
-    scale = max(1, min(int(dw * 0.9) // chip.w, int(dh * 0.85) // chip.h))
-    screen = pygame.display.set_mode((chip.w * scale, chip.h * scale), pygame.RESIZABLE)
-    pygame.display.set_caption(f"Life on {chip.cores} NPU cores — {chip.w}x{chip.h}")
+    if args.fit:
+        screen = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
+    else:
+        scale = max(1, min(int(dw * 0.9) // vw, int(dh * 0.85) // vh))
+        screen = pygame.display.set_mode((vw * scale, vh * scale), pygame.RESIZABLE)
+    pygame.display.set_caption(f"Life on {chip.cores} NPU cores — {vw}x{vh}")
+
+    def mouse_cell():
+        r = place(screen, vw, vh)
+        mx, my = pygame.mouse.get_pos()
+        return (mx - r.x) * vw // max(1, r.w), (my - r.y) * vh // max(1, r.h)
+
     font = pygame.font.SysFont("monospace", 18, bold=True)
     clock = pygame.time.Clock()
 
@@ -87,13 +125,11 @@ def main():
                     message, message_until = f"stamps turned {turn * 90} degrees", time.perf_counter() + 2
                 elif e.unicode.lower() in SHAPES:
                     name, shape = SHAPES[e.unicode.lower()]
-                    sw, sh = screen.get_size()
-                    mx, my = pygame.mouse.get_pos()
-                    x, y = mx * chip.w // sw, my * chip.h // sh
+                    x, y = mouse_cell()
                     if e.mod & pygame.KMOD_SHIFT:  # a fleet: 4 x 3 spread over the world
                         for i in range(4):
                             for j in range(3):
-                                stamp(cells, shape, x + i * chip.w // 4, y + j * chip.h // 3, turn)
+                                stamp(cells, shape, x + i * vw // 4, y + j * vh // 3, turn)
                         name = f"12 x {name}"
                     else:
                         stamp(cells, shape, x, y, turn)
@@ -105,9 +141,7 @@ def main():
         # draw with the mouse
         buttons = pygame.mouse.get_pressed()
         if buttons[0] or buttons[2]:
-            sw, sh = screen.get_size()
-            mx, my = pygame.mouse.get_pos()
-            x, y = mx * chip.w // sw, my * chip.h // sh
+            x, y = mouse_cell()
             ys, xs = np.ogrid[-3:4, -3:4]
             disc = xs * xs + ys * ys <= 9
             yy, xx = (ys + y) % chip.h, (xs + x) % chip.w
@@ -134,11 +168,13 @@ def main():
         heat[cells == 1] = 1.0
         rgb = colors[(heat * 255).astype(np.uint8)]
         rgb[cells == 1] = ALIVE
-        surf = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
-        screen.blit(pygame.transform.scale(surf, screen.get_size()), (0, 0))
+        surf = pygame.surfarray.make_surface(rgb[:vh, :vw].swapaxes(0, 1))
+        r = place(screen, vw, vh)
+        screen.fill((0, 0, 0))
+        screen.blit(pygame.transform.scale(surf, r.size), r.topleft)
         hud(screen, font,
             f"gen {gen:,}  |  {rate:,.0f} gen/s  |  {chip.gens} per frame  |  NPU {ms:.1f} ms/call  |  "
-            f"{chip.w * chip.h * rate / 1e9:.2f} Gcell/s  |  alive {int(cells.sum()):,}"
+            f"{chip.w * chip.h * rate / 1e9:.2f} Gcell/s  |  {vw}x{vh}  |  alive {int(cells.sum()):,}"
             + ("  |  PAUSED" if paused else ""))
         if now < message_until:
             hud(screen, font, message, y=44)
