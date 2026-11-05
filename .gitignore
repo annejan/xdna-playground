@@ -1,0 +1,9 @@
+# made by setup.sh and xrt.sh (or symlinks to an existing copy)
+/ironenv
+/mlir-aie
+/xrt
+/boost
+/x
+/dl
+__pycache__/
+*.png
