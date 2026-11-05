@@ -11,6 +11,9 @@ openSUSE Tumbleweed and the `amdxdna` driver in the mainline kernel.
 
 | program | what it does |
 |---|---|
+| `iron/show.py` | **the show**: Life, Brian's Brain, Wireworld, Gray-Scott and a Mandelbrot dive, one window, `tab` between them, a demo mode for a party table |
+| `iron/gray_chip.py` | Gray-Scott reaction-diffusion on 32 cores: two chemicals per cell in int16, the halos swapped every step |
+| `iron/mandel_chip.py` | Mandelbrot on 32 cores: int32 fixed point (Q28), 16 pixels per vector step |
 | `iron/life_window.py` | Life, Brian's Brain, Wireworld and the old demo fire on all 32 cores, in a window: trails, draw with the mouse, stamp patterns, a demo mode, up to 101 generations per frame |
 | `iron/life_chip.py` | the engine: the world stays on the chip, the cores swap their edge rows with their neighbours every generation |
 | `iron/rules.py` | the automata: each as a 64-cells-per-step vector body, scalar C for the edges, and numpy to check against |
@@ -40,6 +43,18 @@ The same engine with other rules (`life_chip.py --bench --gens 101 --rule ...`):
 | Brian's Brain: off, firing, dying; fires with exactly 2 firing neighbours | 29,361 Mcell/s | 518 |
 | Wireworld: empty, electron head, tail, wire; a wire fires with 1 or 2 heads around | 27,858 Mcell/s | 959 |
 | Demo fire: a byte of heat, the 3 cells below move up a row, every 8th column cools | 30,654 Mcell/s | 1,079 |
+
+Gray-Scott and Mandelbrot (`gray_chip.py --bench`, `mandel_chip.py --bench`), both checked bit for
+bit against the same arithmetic in numpy:
+
+| | NPU | numpy |
+|---|---:|---:|
+| Gray-Scott, 512 x 320, 2 x int16 per cell | 49,655 steps/s (8.1 Gcell/s) | 726 steps/s |
+| Mandelbrot 960 x 540, up to 1024 iterations | 22.7 ms per frame (6.3 G iterations/s) | 5.6 s per frame* |
+| Mandelbrot 960 x 540 at 20,000x, up to 4096 iterations | 11.7 ms per frame | 21 s per frame* |
+
+\* numpy emulates the kernel's fixed-point maths in int64 to compare bit for bit; plain float numpy
+is about 10x faster than that, still far from a frame per 60th of a second.
 
 ## How the on-chip Life works
 
@@ -83,6 +98,7 @@ try it, please open an issue with what happened.
 
 ```
 cd iron
+../env.sh python show.py --fit --demo               # the show: fullscreen, a new scene every 25 seconds
 ../env.sh python life_window.py                     # 1024 x 768 world in a window
 ../env.sh python life_window.py --fit               # fullscreen, world sized to the screen (960 x 600 at 2x on 1920 x 1200)
 ../env.sh python life_window.py --fit --demo        # show mode: a new scene every 25 seconds
