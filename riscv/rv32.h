@@ -26,14 +26,23 @@
 
 enum { RV_FRAME = 1, RV_BUDGET = 2, RV_HALT = 3, RV_BAD = 4 };
 
+/* a 32-bit word that may alias the byte RAM: aligned accesses become one load or store */
+typedef uint32_t __attribute__((may_alias)) rv_word;
+
 static inline uint32_t rv_ld32(const uint8_t *m, uint32_t a) {
     a &= RV_MASK;
+    if ((a & 3) == 0)
+        return *(const rv_word *)(m + a);
     return (uint32_t)m[a] | (uint32_t)m[(a + 1) & RV_MASK] << 8 | (uint32_t)m[(a + 2) & RV_MASK] << 16 |
            (uint32_t)m[(a + 3) & RV_MASK] << 24;
 }
 
 static inline void rv_st32(uint8_t *m, uint32_t a, uint32_t v) {
     a &= RV_MASK;
+    if ((a & 3) == 0) {
+        *(rv_word *)(m + a) = v;
+        return;
+    }
     m[a] = (uint8_t)v;
     m[(a + 1) & RV_MASK] = (uint8_t)(v >> 8);
     m[(a + 2) & RV_MASK] = (uint8_t)(v >> 16);

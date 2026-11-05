@@ -16,6 +16,7 @@
   Mandelbrot   mouse left: zoom towards there; right: zoom out; n: next place to dive into
   Julia        mouse left: take c in your hand and drag it; right: let go; n: somewhere else on the circle
   Lenia        mouse left: drop an Orbium; right: wipe a spot; r: 8 new ones
+  RISC-V       32 computers, one per core: click a screen to boot it with the next program; r: reboot all
   Mirrors      the webcam: Turing mirror (you in living labyrinths; i: invert, p: preset),
                Julia hand (move to steer c), Life mirror (motion becomes cells)
 """
@@ -608,6 +609,96 @@ class JuliaHand(Julia):
         return z.real, z.imag
 
 
+class RiscV:
+    """32 RISC-V computers, one on every NPU core: a wall of 8 x 4 mini screens. Each machine runs a
+    small bare-metal program (plasma, Mandelbrot, Life, stars) on an RV32IM interpreter with 32 KB
+    of RAM. Click a screen to boot that machine with the next program."""
+
+    smooth = False
+    unit = "call"
+    title = "32 RISC-V computers"
+    GAP = 4
+
+    def __init__(self, sw, sh, cols):
+        from riscv_chip import Machines, programs
+        import machines as M
+        self.M = M
+        self.mach = Machines(cols, budget=100_000)
+        self.n = self.mach.n
+        self.gx, self.gy = 8, self.n // 8
+        self.vw = self.gx * M.W + (self.gx - 1) * self.GAP
+        self.vh = self.gy * M.H + (self.gy - 1) * self.GAP
+        self.programs = programs
+        self.which = [k % len(M.PROGRAMS) for k in range(self.n)]
+        self.speeds = [4, 8, 14, 30, 60]  # ms per call the budget aims for
+        self.speed_i, self.bloom = 2, 0.35
+        self.outs = None
+        self.mips, self.last_click = 0.0, 0.0
+        self.start()
+
+    def start(self, what=None):
+        self.which = [k % len(self.M.PROGRAMS) for k in range(self.n)]
+        self.outs, _ = self.mach.load(self.programs(self.n))
+        return "click a screen to boot that machine with another program"
+
+    def reset(self):
+        self.start()
+
+    def set_speed(self, i):
+        self.target = self.speeds[i]
+
+    def key(self):
+        return ("riscv",)
+
+    def warm(self):
+        self.mach.run()
+        return [self.key()]
+
+    def step(self):
+        self.outs, ms = self.mach.run()
+        why, ran, pc = self.mach.status(self.outs)
+        total = int(ran.sum())
+        self.mips = total / max(ms, 0.1) / 1000
+        # aim the per-machine budget at the call time this speed wants
+        b = self.mach.budget * min(2.0, max(0.5, self.target / max(ms, 0.5)))
+        self.mach.budget = int(min(5_000_000, max(10_000, b)))
+        return ms, 1
+
+    def cells(self):
+        return 0
+
+    def image(self):
+        M, g = self.M, self.GAP
+        screens = self.mach.screens(self.outs)
+        img = np.zeros((self.vh, self.vw, 3), np.uint8)
+        for k in range(self.n):
+            r, c = divmod(k, self.gx)
+            y, x = r * (M.H + g), c * (M.W + g)
+            img[y:y + M.H, x:x + M.W] = M.PALETTE[screens[k]]
+        return img
+
+    def paint(self, x, y, left):
+        now = time.perf_counter()
+        if not left or now - self.last_click < 0.4:
+            return
+        self.last_click = now
+        k = (y // (self.M.H + self.GAP)) * self.gx + x // (self.M.W + self.GAP)
+        if 0 <= k < self.n:
+            self.which[k] = (self.which[k] + 1) % len(self.M.PROGRAMS)
+            self.outs, _ = self.mach.load_one(k, self.M.program(self.M.PROGRAMS[self.which[k]]))
+
+    def press(self, e, x, y):
+        if e.key in (pygame.K_r, pygame.K_c):
+            return self.start()
+        return None
+
+    def status(self):
+        return f"  |  {self.mips:,.0f} MIPS together  |  {self.mach.budget:,} instructions per machine per call"
+
+    def draw(self, r, rect):
+        r.image(self.image(), rect, key="riscv")
+
+
 x = np.linspace(0, 2 * np.pi, 256, endpoint=False)
 RAINBOW = (np.stack([0.5 + 0.5 * np.sin(x), 0.5 + 0.5 * np.sin(x + 2.1), 0.5 + 0.5 * np.sin(x + 4.2)], -1)
            * 255).astype(np.uint8)
@@ -615,7 +706,7 @@ del x
 
 # ---------------------------------------------------------------------------------------------
 
-EFFECTS = ["julia", "mandel", "hand", "life", "brain", "wire", "gray", "lenia", "mirror", "wave"]
+EFFECTS = ["julia", "mandel", "riscv", "hand", "life", "brain", "wire", "gray", "lenia", "mirror", "wave"]
 # demo scenes: (effect, start, speed index)
 # demo scenes: (effect, start, speed index). Fractals first: they never settle, an automaton left
 # alone always does (the mirrors need a lit room, so they stay under tab)
@@ -676,6 +767,8 @@ def main():
                 made[name] = Julia(sw, sh, dev.cols)
             elif name == "lenia":
                 made[name] = LeniaFx(sw, sh, dev.cols)
+            elif name == "riscv":
+                made[name] = RiscV(sw, sh, dev.cols)
             elif name == "mirror":
                 made[name] = TuringMirror(sw, sh, dev.cols)
             elif name == "hand":
@@ -726,7 +819,7 @@ def main():
             pygame.display.flip()
             pygame.event.pump()
             switch(n, w, sp)
-            if n in ("mandel", "julia"):
+            if n in ("mandel", "julia", "riscv"):
                 compiled.update(cur.warm())
             elif cur.key() not in compiled:
                 cur.step()
@@ -807,7 +900,7 @@ def main():
             scale = pygame.transform.smoothscale if cur.smooth else pygame.transform.scale
             screen.blit(scale(surf, r.size), r.topleft)
 
-        cells = f"  |  {cur.cells() * rate / 1e9:.2f} Gcell/s" if cur.unit != "frame" else ""
+        cells = f"  |  {cur.cells() * rate / 1e9:.2f} Gcell/s" if cur.unit != "frame" and cur.cells() else ""
         drawn = f"  |  drawn by {gpu_name}" if use_gl else ""
         text(font, f"{cur.title}  |  {rate:,.0f} {cur.unit}s/s  |  NPU busy {busy:4.0%}{cells}"
                    f"{cur.status()}  |  {cur.vw}x{cur.vh} on {dev.cols * ROWS} NPU cores{drawn}"

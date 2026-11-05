@@ -142,6 +142,14 @@ class Machines:
         self.frames[:] = 0
         return self._call(cmds)
 
+    def load_one(self, k, code):
+        """Boot machine k with a new program; the others only report their screen."""
+        cmds = np.zeros((self.n, IN), np.uint8)
+        cmds[k, :16] = np.array([LOAD, k, 0, len(code)], np.uint32).view(np.uint8)
+        cmds[k, CMD:CMD + len(code)] = np.frombuffer(code, np.uint8)
+        self.frames[k] = 0
+        return self._call(cmds)
+
     def run(self):
         """Every machine runs until it ends a frame or the budget is spent. Returns the outputs and ms."""
         cmds = np.zeros((self.n, IN), np.uint8)

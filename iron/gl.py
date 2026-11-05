@@ -147,6 +147,15 @@ void main() {
 }
 """
 
+IMAGE = """
+#version 330
+uniform sampler2D img;
+uniform float gain;
+in vec2 uv;
+out vec4 color;
+void main() { color = vec4(texture(img, vec2(uv.x, 1.0 - uv.y)).rgb * gain, 1.0); }
+"""
+
 TEXT = """
 #version 330
 uniform sampler2D img;
@@ -163,7 +172,8 @@ class Renderer:
         quad = ctx.buffer(np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype="f4").tobytes())
         self.progs, self.vaos = {}, {}
         for name, fs in (("heat", HEAT), ("ca", CA), ("gray", GRAY), ("mandel", MANDEL), ("bright", BRIGHT),
-                         ("blur", BLUR), ("compose", COMPOSE), ("text", TEXT)):
+                         ("blur", BLUR), ("compose", COMPOSE), ("text", TEXT),
+                         ("image", IMAGE)):
             prog = ctx.program(vertex_shader=VS, fragment_shader=fs)
             self.progs[name] = prog
             self.vaos[name] = ctx.vertex_array(prog, [(quad, "2f", "pos")])
@@ -266,6 +276,13 @@ class Renderer:
         tex = self._tex("mandel:n", (h, w), 1, "f4", nearest=False)
         tex.write(counts.astype(np.float32).tobytes())
         self._draw("mandel", self.scene_fb, self._viewport(rect), counts=tex, maxit=float(maxit), t=t)
+
+    def image(self, rgb, rect, key="image", gain=1.3):
+        """An RGB picture (h, w, 3 uint8), sharp pixels; gain > 1 lets the bright parts bloom."""
+        h, w, _ = rgb.shape
+        tex = self._tex(key, (h, w), 3, "f1")
+        tex.write(np.ascontiguousarray(rgb, dtype=np.uint8).tobytes())
+        self._draw("image", self.scene_fb, self._viewport(rect), img=tex, gain=gain)
 
     def finish(self, target, strength=0.8, threshold=0.9):
         """Bloom, tone mapping, onto `target` (ctx.screen, or a framebuffer when testing)."""
