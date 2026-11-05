@@ -11,5 +11,5 @@ ironenv/bin/pip install -q --upgrade pip
 ironenv/bin/pip install "mlir_aie==${MLIR_AIE#v}" -f "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/$MLIR_AIE"
 ironenv/bin/pip install -r mlir-aie/utils/peano-requirements.txt
 ironenv/bin/pip install -r mlir-aie/python/requirements.txt
-ironenv/bin/pip install pygame-ce moderngl
+ironenv/bin/pip install pygame-ce moderngl opencv-python-headless
 du -sh ironenv

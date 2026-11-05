@@ -16,6 +16,8 @@
   Mandelbrot   mouse left: zoom towards there; right: zoom out; n: next place to dive into
   Julia        mouse left: take c in your hand and drag it; right: let go; n: somewhere else on the circle
   Lenia        mouse left: drop an Orbium; right: wipe a spot; r: 8 new ones
+  Mirrors      the webcam: Turing mirror (you in living labyrinths; i: invert, p: preset),
+               Julia hand (move to steer c), Life mirror (motion becomes cells)
 """
 
 import argparse
@@ -485,6 +487,116 @@ class Julia:
         r.mandel(self.counts, self.MAXIT, self.t * 0.004, rect)
 
 
+# ---------------------------------------------------------------------------------------------
+# mirrors: the webcam drives the effect, so it never settles (an automaton left alone always does)
+
+_camera = None
+
+
+def camera():
+    global _camera
+    if _camera is None:
+        from camera import Camera
+        _camera = Camera()
+    return _camera
+
+
+def smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+class TuringMirror(Reaction):
+    """Gray-Scott that only lives where the camera sees light: you, drawn in living labyrinths.
+    Where it is dark the chemistry dies off; where it is light it grows back from new seeds."""
+
+    title = "Turing mirror"
+
+    def __init__(self, sw, sh, cols):
+        super().__init__(sw, sh, cols)
+        self.speeds = [21, 51, 101, 201, 401]
+        self.speed_i = 1
+        self.g.preset = "coral"
+        self.invert = False
+
+    def start(self, preset=None):
+        self.g.preset = preset or "coral"
+        self.reset()
+        return "stand in front of the camera" + ("" if camera().ok else " (no camera found)")
+
+    def step(self):
+        ms, n = super().step()
+        light = camera().gray(self.g.w, self.g.h)
+        if light is not None:
+            if self.invert:
+                light = 1.0 - light
+            alive = smoothstep(0.3, 0.6, light)
+            self.v = (self.v * (0.5 + 0.5 * alive)).astype(np.int16)
+            self.u = (self.u + (ONE - self.u) * (1 - alive) * 0.5).astype(np.int16)
+            seed = (self.rng.random(self.v.shape) < 0.003 * alive) & (self.v < 100)
+            self.v[seed], self.u[seed] = ONE // 4, ONE // 2
+        return ms, n
+
+    def press(self, e, x, y):
+        if e.key == pygame.K_i:
+            self.invert = not self.invert
+            return "the dark parts live now" if self.invert else "the light parts live now"
+        return super().press(e, x, y)
+
+    def status(self):
+        return super().status() + ("  |  no camera" if not camera().ok else "")
+
+
+class LifeMirror(Life):
+    """Life seeded by motion: whatever moves in front of the camera turns into cells."""
+
+    def __init__(self, sw, sh, cols, fade):
+        super().__init__(sw, sh, cols, "life", fade)
+        self.title = "Life mirror"
+        self.speed_i = 0
+
+    def start(self, what=None):
+        self.world.clear()
+        return "wave at the camera" + ("" if camera().ok else " (no camera found)")
+
+    def step(self):
+        ms, n = super().step()
+        move = camera().motion(self.vw, self.vh, "life")
+        if move is not None:
+            born = (move > 0.25) & (self.world.rng.random(move.shape) < 0.45)
+            self.world.cells[:self.vh, :self.vw][born] = 1
+        return ms, n
+
+
+class JuliaHand(Julia):
+    """Julia sets steered by motion: where you move in front of the camera picks c. Left-right walks
+    along the edge of the Mandelbrot set, up-down goes from inside it (filled) to outside (dust)."""
+
+    title = "Julia hand"
+
+    def __init__(self, sw, sh, cols):
+        super().__init__(sw, sh, cols)
+        self.pos = None  # smoothed (x, y) of the motion, 0..1
+
+    def start(self, what=None):
+        self.pos = None
+        return "move your hand in front of the camera" + ("" if camera().ok else " (no camera found)")
+
+    def c(self):
+        move = camera().motion(64, 40, "julia")
+        if move is not None and move.sum() > 6:
+            ys, xs = np.mgrid[0:40, 0:64]
+            p = ((xs * move).sum() / move.sum() / 64, (ys * move).sum() / move.sum() / 40)
+            self.pos = p if self.pos is None else (self.pos[0] * 0.85 + p[0] * 0.15, self.pos[1] * 0.85 + p[1] * 0.15)
+        if self.pos is None or self.hand is not None:
+            return super().c()
+        t = 0.35 + self.pos[0] * (2 * np.pi - 0.7)  # around the cardioid, skipping the cusp
+        z = complex(math.cos(t), math.sin(t)) / 2 - complex(math.cos(2 * t), math.sin(2 * t)) / 4
+        out = z - 0.25
+        z += (0.12 * (0.5 - self.pos[1]) + 0.02) * out / abs(out)
+        return z.real, z.imag
+
+
 x = np.linspace(0, 2 * np.pi, 256, endpoint=False)
 RAINBOW = (np.stack([0.5 + 0.5 * np.sin(x), 0.5 + 0.5 * np.sin(x + 2.1), 0.5 + 0.5 * np.sin(x + 4.2)], -1)
            * 255).astype(np.uint8)
@@ -492,12 +604,13 @@ del x
 
 # ---------------------------------------------------------------------------------------------
 
-EFFECTS = ["life", "brain", "wire", "gray", "lenia", "mandel", "julia"]
+EFFECTS = ["mirror", "hand", "wave", "life", "brain", "wire", "gray", "lenia", "mandel", "julia"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("lenia", None, 2), ("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
+SCENES = [("mirror", "coral", 1), ("hand", None, 2), ("wave", None, 0), ("lenia", None, 2), ("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
           ("life", "g", 3), ("brain", "soup", 1), ("julia", None, 3), ("gray", "bubbles", 4), ("mandel", 1, 2),
           ("life", "a", 4), ("wire", "soup", 1), ("gray", "spirals", 3), ("julia", None, 2), ("mandel", 2, 3),
-          ("lenia", None, 3), ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
+          ("lenia", None, 3), ("mirror", "spirals", 2), ("life", "l", 4), ("hand", None, 2), ("gray", "waves", 3),
+          ("mandel", 3, 2)]
 
 
 def main():
@@ -505,7 +618,7 @@ def main():
     p.add_argument("--fit", action="store_true", help="fullscreen")
     p.add_argument("--demo", type=float, nargs="?", const=25, metavar="SECONDS",
                    help="show mode: a new scene every SECONDS (default 25)")
-    p.add_argument("--effect", choices=EFFECTS, default="life")
+    p.add_argument("--effect", choices=EFFECTS, default="mirror")
     p.add_argument("--fade", type=float, default=0.93)
     p.add_argument("--cpu-render", action="store_true", help="draw with numpy + pygame, not the GPU")
     args = p.parse_args()
@@ -552,6 +665,12 @@ def main():
                 made[name] = Julia(sw, sh, dev.cols)
             elif name == "lenia":
                 made[name] = LeniaFx(sw, sh, dev.cols)
+            elif name == "mirror":
+                made[name] = TuringMirror(sw, sh, dev.cols)
+            elif name == "hand":
+                made[name] = JuliaHand(sw, sh, dev.cols)
+            elif name == "wave":
+                made[name] = LifeMirror(sw, sh, dev.cols, args.fade)
             else:
                 made[name] = Fractal(sw, sh, dev.cols)
         return made[name]
@@ -571,7 +690,7 @@ def main():
         if sp is not None:
             cur.speed_i = sp
         cur.set_speed(cur.speed_i)
-        if what is not None or name in ("julia", "lenia"):
+        if what is not None or name in ("julia", "lenia", "mirror", "hand", "wave"):
             say(cur.start(what))
         note["title_until"] = time.perf_counter() + 4
 
