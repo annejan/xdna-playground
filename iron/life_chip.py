@@ -30,7 +30,8 @@ from aie.iron.controlflow import range_
 from aie.iron.device import Tile
 from aie.iron.runtime import TaskGroup
 
-from life import cpu, draw, levels
+from life import draw, levels
+from rules import RULES, cpu, seed
 
 ROWS = 4  # core rows per column on NPU2 (rows 2..5)
 BAND_MAX = 24 * 1024  # bytes per band: in + out buffers (48 KB) + the edge rows must fit in 64 KB
@@ -39,35 +40,38 @@ PAD = 64  # an edge row sits at offset 64 in a W+128 buffer: the c-1 / c+1 loads
 CELL = """
 #include <stdint.h>
 #include <aie_api/aie.hpp>
+#define ON(v) {on}
+#define NEXT(m, s) {next}
 #define CELL(c) do {{ \\
     int cc = (c), l = cc ? cc - 1 : {w} - 1, rt = cc == {w} - 1 ? 0 : cc + 1; \\
-    int s = up[l] + up[cc] + up[rt] + mid[l] + mid[rt] + dn[l] + dn[cc] + dn[rt]; \\
-    o[cc] = s == 3 || (s == 2 && mid[cc]); \\
+    int s = ON(up[l]) + ON(up[cc]) + ON(up[rt]) + ON(mid[l]) + ON(mid[rt]) + ON(dn[l]) + ON(dn[cc]) + ON(dn[rt]); \\
+    o[cc] = NEXT(mid[cc], s); \\
 }} while (0)
 """
 
 STEP = """
 extern "C" {{
 /* one generation of a band: src -> dst, with the neighbours' rows above and below */
-void life_step(uint8_t *src, uint8_t *dst, uint8_t *above, uint8_t *below) {{
+void {rule}_step(uint8_t *src, uint8_t *dst, uint8_t *above, uint8_t *below) {{
     const auto zero = aie::zeros<uint8_t, 64>();
     const auto one = aie::broadcast<uint8_t, 64>(1);
+    const auto two = aie::broadcast<uint8_t, 64>(2);
     const auto three = aie::broadcast<uint8_t, 64>(3);
+    (void)two;
     for (int r = 0; r < {rows}; r++) {{
         const uint8_t *up = r ? src + (r - 1) * {w} : above + {pad};
         const uint8_t *mid = src + r * {w};
         const uint8_t *dn = r < {rows} - 1 ? src + (r + 1) * {w} : below + {pad};
         uint8_t *o = dst + r * {w};
         for (int c = 0; c < {w}; c += 64) {{
-            auto s = aie::add(aie::load_unaligned_v<64>(up + c - 1), aie::load_unaligned_v<64>(up + c));
-            s = aie::add(s, aie::load_unaligned_v<64>(up + c + 1));
-            s = aie::add(s, aie::load_unaligned_v<64>(mid + c - 1));
-            s = aie::add(s, aie::load_unaligned_v<64>(mid + c + 1));
-            s = aie::add(s, aie::load_unaligned_v<64>(dn + c - 1));
-            s = aie::add(s, aie::load_unaligned_v<64>(dn + c));
-            s = aie::add(s, aie::load_unaligned_v<64>(dn + c + 1));
-            auto alive = aie::eq(aie::bit_or(s, aie::load_unaligned_v<64>(mid + c)), three);
-            aie::store_unaligned_v(o + c, aie::select(zero, one, alive));
+            auto ul = aie::load_unaligned_v<64>(up + c - 1), uc = aie::load_unaligned_v<64>(up + c);
+            auto ur = aie::load_unaligned_v<64>(up + c + 1);
+            auto ml = aie::load_unaligned_v<64>(mid + c - 1), mc = aie::load_unaligned_v<64>(mid + c);
+            auto mr = aie::load_unaligned_v<64>(mid + c + 1);
+            auto dl = aie::load_unaligned_v<64>(dn + c - 1), dc = aie::load_unaligned_v<64>(dn + c);
+            auto dr = aie::load_unaligned_v<64>(dn + c + 1);
+{vector}
+            aie::store_unaligned_v(o + c, res);
         }}
         CELL(0);
         CELL({w} - 1);
@@ -79,7 +83,7 @@ void life_step(uint8_t *src, uint8_t *dst, uint8_t *above, uint8_t *below) {{
 ROW = """
 extern "C" {{
 /* copy row r of a band into an edge buffer (at offset PAD) */
-void life_row(uint8_t *band, uint8_t *edge, int32_t r) {{
+void {rule}_row(uint8_t *band, uint8_t *edge, int32_t r) {{
     for (int c = 0; c < {w}; c += 64)
         aie::store_unaligned_v(edge + {pad} + c, aie::load_unaligned_v<64>(band + r * {w} + c));
 }}
@@ -95,7 +99,7 @@ def snake(k):
 
 @iron.jit
 def life_chip(world: In, out: Out, *, w: CompileTime[int], rows: CompileTime[int], gens: CompileTime[int],
-              cols: CompileTime[int]):
+              cols: CompileTime[int], rule: CompileTime[str] = "life"):
     cores = cols * ROWS
     n = cores * rows * w
     band = rows * w
@@ -104,10 +108,11 @@ def life_chip(world: In, out: Out, *, w: CompileTime[int], rows: CompileTime[int
     band_ty = np.ndarray[(band,), np.dtype[np.uint8]]
     edge_ty = np.ndarray[(w + 2 * PAD,), np.dtype[np.uint8]]
 
-    fmt = {"w": w, "rows": rows, "pad": PAD}
-    step = ExternalFunction("life_step", source_string=CELL.format(**fmt) + STEP.format(**fmt),
+    r = RULES[rule]
+    fmt = {"w": w, "rows": rows, "pad": PAD, "rule": rule, "on": r["on"], "next": r["next"], "vector": r["vector"]}
+    step = ExternalFunction(f"{rule}_step", source_string=CELL.format(**fmt) + STEP.format(**fmt),
                             arg_types=[band_ty, band_ty, edge_ty, edge_ty])
-    row = ExternalFunction("life_row", source_string=CELL.format(**fmt) + ROW.format(**fmt),
+    row = ExternalFunction(f"{rule}_row", source_string=CELL.format(**fmt) + ROW.format(**fmt),
                            arg_types=[band_ty, edge_ty, np.dtype(np.int32)])
 
     # host <-> memtile per column, memtile <-> the column's 4 cores (in chain order)
@@ -173,7 +178,8 @@ def life_chip(world: In, out: Out, *, w: CompileTime[int], rows: CompileTime[int
 
 
 class Chip:
-    def __init__(self, w, h, gens, cols):
+    def __init__(self, w, h, gens, cols, rule="life"):
+        self.rule = rule
         self.w = max(64, w - w % 64)
         self.cores = cols * ROWS
         self.rows = max(1, min(-(-h // self.cores), BAND_MAX // self.w))
@@ -188,7 +194,7 @@ class Chip:
         with self._in.overwrite() as a:
             a[...] = cells.ravel()
         t0 = time.perf_counter()
-        life_chip(self._in, self._out, w=self.w, rows=self.rows, gens=self.gens, cols=self.cols)
+        life_chip(self._in, self._out, w=self.w, rows=self.rows, gens=self.gens, cols=self.cols, rule=self.rule)
         ms = (time.perf_counter() - t0) * 1000
         return self._out.numpy().reshape(self.h, self.w).copy(), ms
 
@@ -199,6 +205,7 @@ def main():
     p.add_argument("--bench", action="store_true", help="no drawing: the biggest world, race numpy")
     p.add_argument("--size", nargs=2, type=int, metavar=("W", "H"), help="world size for --bench")
     p.add_argument("--calls", type=int, default=5)
+    p.add_argument("--rule", choices=sorted(RULES), default="life")
     p.add_argument("--fill", type=float, default=0.3)
     p.add_argument("--fps", type=float, default=30)
     args = p.parse_args()
@@ -209,10 +216,10 @@ def main():
     rng = np.random.default_rng(1)
     if args.bench:
         w, h = args.size or (512, 10**6)
-        chip = Chip(w, h, args.gens, dev.cols)
-        cells = (rng.random((chip.h, chip.w)) < args.fill).astype(np.uint8)
+        chip = Chip(w, h, args.gens, dev.cols, args.rule)
+        cells = seed(args.rule, (chip.h, chip.w), rng, args.fill)
         got, first = chip.run(cells)  # compile + warm up, and the check
-        same = np.array_equal(got, cpu(cells, args.gens))
+        same = np.array_equal(got, cpu(cells, args.gens, args.rule))
         t0 = time.perf_counter()
         c = cells
         for _ in range(args.calls):
@@ -220,12 +227,12 @@ def main():
         dt = time.perf_counter() - t0
         n = args.gens * args.calls
         t1 = time.perf_counter()
-        want = cpu(cells, min(n, 200))
+        want = cpu(cells, min(n, 200), args.rule)
         cpu_dt = (time.perf_counter() - t1) * n / min(n, 200)
         if n <= 1000:  # all calls, so a reused buffer that hands back stale data shows up too
-            same = same and np.array_equal(c, want if n <= 200 else cpu(cells, n))
+            same = same and np.array_equal(c, want if n <= 200 else cpu(cells, n, args.rule))
         cups = chip.w * chip.h * n
-        print(f"on-chip life: world {chip.w}x{chip.h}, {chip.cores} cores x {chip.rows} rows, "
+        print(f"on-chip {args.rule}: world {chip.w}x{chip.h}, {chip.cores} cores x {chip.rows} rows, "
               f"{args.gens} gens per call, {args.calls} calls")
         print(f"NPU  : {n / dt:9.0f} gen/s  {cups / dt / 1e6:9.1f} Mcell/s")
         print(f"numpy: {n / cpu_dt:9.0f} gen/s  {cups / cpu_dt / 1e6:9.1f} Mcell/s")
@@ -234,8 +241,8 @@ def main():
         return
 
     cols, trows = shutil.get_terminal_size()
-    chip = Chip(cols, (trows - 2) * 2, args.gens, dev.cols)
-    cells = (rng.random((chip.h, chip.w)) < args.fill).astype(np.uint8)
+    chip = Chip(cols, (trows - 2) * 2, args.gens, dev.cols, args.rule)
+    cells = seed(args.rule, (chip.h, chip.w), rng, args.fill)
     heat = np.zeros(cells.shape)
     shown = (trows - 2) * 2
     sys.stdout.write("\x1b[2J\x1b[?25l")
@@ -244,7 +251,7 @@ def main():
         while True:
             t0 = time.perf_counter()
             new, ms = chip.run(cells)
-            if gen < 3 * args.gens and not np.array_equal(new, cpu(cells, args.gens)):
+            if gen < 3 * args.gens and not np.array_equal(new, cpu(cells, args.gens, args.rule)):
                 sys.stdout.write("\x1b[0m\x1b[?25h\n")
                 sys.exit(f"NPU and numpy differ at generation {gen}")
             cells, gen = new, gen + args.gens
@@ -253,7 +260,7 @@ def main():
                  f"gen {gen:6d} | alive {int(cells.sum()):5d} | {chip.cores} cores on chip: {ms:5.1f} ms / "
                  f"{args.gens} gens | {rate:5.0f} gen/s | {chip.w}x{chip.h}")
             if not cells.any():
-                cells = (rng.random(cells.shape) < args.fill).astype(np.uint8)
+                cells = seed(args.rule, cells.shape, rng, args.fill)
             time.sleep(max(0.0, 1 / args.fps - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         pass
