@@ -149,9 +149,8 @@ class World:
 
 
 # demo scenes: (rule, start: "soup" or a pattern key for a fleet of 12, speed index)
-SCENES = [("life", "soup", 1), ("life", "g", 2), ("brain", "soup", 0), ("fire", "soup", 0), ("life", "a", 3),
-          ("wire", "soup", 0), ("life", "l", 3), ("brain", "soup", 1), ("life", "n", 2), ("fire", "soup", 1),
-          ("life", "p", 4)]
+SCENES = [("life", "soup", 1), ("life", "g", 2), ("brain", "soup", 0), ("life", "a", 3),
+          ("wire", "soup", 0), ("life", "l", 3), ("brain", "soup", 1), ("life", "n", 2), ("life", "p", 4)]
 
 
 def main():
@@ -215,6 +214,7 @@ def main():
         state["title_until"] = time.perf_counter() + 4
 
     paused, step, gen, gens_done, t_rate, ms, rate = False, False, 0, 0, time.perf_counter(), 0.0, 0.0
+    npu_ms, busy = 0.0, 0.0  # time in NPU calls since the last update, and the share of wall time it was
     compiled = set()
     turn, show_help = 0, False
     demo, demo_i = args.demo, 0
@@ -286,6 +286,7 @@ def main():
                 pygame.display.flip()
                 compiled.add((chip.rule, chip.gens))
             world.cells, ms = chip.run(world.cells)
+            npu_ms += ms
             gen += chip.gens
             if world.sources:
                 feed(world.cells, world.sources, gen, chip.gens)
@@ -294,7 +295,8 @@ def main():
 
         now = time.perf_counter()
         if now - t_rate > 0.5:
-            rate, gens_done, t_rate = gens_done / (now - t_rate), 0, now
+            rate, busy = gens_done / (now - t_rate), npu_ms / 1000 / (now - t_rate)
+            gens_done, npu_ms, t_rate = 0, 0.0, now
 
         rgb = colorize(chip.rule, world.cells, world.heat, args.fade)
         top, rows = view()
@@ -304,7 +306,7 @@ def main():
         screen.blit(pygame.transform.scale(surf, r.size), r.topleft)
         hud(screen, font,
             f"{TITLES[chip.rule]}  |  gen {gen:,}  |  {rate:,.0f} gen/s  |  {chip.gens} per frame  |  "
-            f"NPU {ms:.1f} ms/call  |  {chip.w * chip.h * rate / 1e9:.2f} Gcell/s  |  {vw}x{vh}"
+            f"NPU busy {busy:4.0%}  |  {chip.w * chip.h * rate / 1e9:.2f} Gcell/s  |  {vw}x{vh}"
             + ("  |  PAUSED" if paused else "") + ("  |  DEMO" if demo else ""))
         if now < state["message_until"]:
             hud(screen, font, state["message"], y=44)
