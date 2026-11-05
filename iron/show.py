@@ -812,6 +812,8 @@ def main():
                 text(font, line, y=80 + i * 28)
         pygame.display.flip()
         clock.tick(60)
+    if _camera is not None:
+        _camera.close()
     pygame.quit()
 
 

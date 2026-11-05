@@ -20,15 +20,31 @@ class Camera:
         self.lock = threading.Lock()
         self.ok = False
         self.prev = {}
+        self.running = False
+        self.thread = None
         if cv2 is None:
             return
         self.cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
         self.ok = self.cap.isOpened()
         if self.ok:
-            threading.Thread(target=self._grab, daemon=True).start()
+            self.running = True
+            self.thread = threading.Thread(target=self._grab, daemon=True)
+            self.thread.start()
+
+    def close(self):
+        """Stop the reader thread and let go of the camera. Without this, quitting while the thread is
+        inside OpenCV's read() makes the C++ runtime abort the whole program."""
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+            self.thread = None
+        if cv2 is not None and getattr(self, "cap", None) is not None:
+            self.cap.release()
+            self.cap = None
+        self.ok = False
 
     def _grab(self):
-        while True:
+        while self.running:
             ok, f = self.cap.read()
             if not ok:
                 time.sleep(0.05)
