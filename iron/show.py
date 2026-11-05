@@ -15,6 +15,7 @@
   Gray-Scott   mouse left drops chemical, right wipes; p: next preset (coral, mitosis, worms, ...)
   Mandelbrot   mouse left: zoom towards there; right: zoom out; n: next place to dive into
   Julia        mouse left: take c in your hand and drag it; right: let go; n: somewhere else on the circle
+  Lenia        mouse left: drop an Orbium; right: wipe a spot; r: 14 new ones
 """
 
 import argparse
@@ -28,6 +29,10 @@ import aie.iron as iron
 from gl import Renderer
 from gray_chip import ONE, PRESETS, Gray
 from gray_chip import seed as gray_seed
+from lenia_chip import ONE as LONE
+from lenia_chip import ORBIUM
+from lenia_chip import Lenia as LeniaChip
+from lenia_chip import creatures, decode
 from life_chip import ROWS, Chip
 from life_window import FIRE, ICE, SPEEDS, TITLES, World, colorize, fit_world, hud, lut, place
 from mandel_chip import FRAC, Mandel
@@ -205,7 +210,85 @@ class Reaction:
         return f"  |  {self.g.preset}"
 
     def draw(self, r, rect):
-        r.gray(self.v[:self.vh, :self.vw], self.g.preset, PALETTES[self.g.preset], rect)
+        r.gray(self.v[:self.vh, :self.vw], self.g.preset, PALETTES[self.g.preset], rect, top=0.45)
+
+
+LENIA_LUT = lut([(0.0, (2, 4, 16)), (0.25, (20, 30, 110)), (0.5, (40, 140, 200)), (0.75, (190, 240, 160)),
+                 (1.0, (255, 255, 230))])
+
+
+class LeniaFx:
+    """Lenia: Orbium gliders in continuous Life; 412 multiply-adds per cell per step on the NPU.
+    The world is 13 rows per core tall and 256 wide, so it is drawn lying down. Click: a new Orbium."""
+
+    smooth = True
+    unit = "step"
+    title = "Lenia"
+
+    def __init__(self, sw, sh, cols):
+        self.l = LeniaChip(256, 7, cols)
+        self.vw, self.vh = self.l.h, self.l.w  # lying down: world rows run left to right
+        self.speeds = [1, 3, 7, 15, 31]
+        self.speed_i, self.bloom = 2, 0.6
+        self.rng = np.random.default_rng()
+        self.orbium = np.round(decode(ORBIUM) * LONE).astype(np.int16)
+        self.last_drop = 0.0
+        self.reset()
+
+    def reset(self):
+        self.a = creatures(self.l.h, self.l.w, self.rng, count=14)
+
+    def start(self, what=None):
+        self.reset()
+        return "14 Orbia, gliding"
+
+    def set_speed(self, i):
+        self.l.steps = self.speeds[i]
+
+    def key(self):
+        return ("lenia", self.l.steps)
+
+    def step(self):
+        self.a, ms = self.l.run(self.a)
+        return ms, self.l.steps
+
+    def cells(self):
+        return self.l.w * self.l.h
+
+    def image(self):
+        return LENIA_LUT[np.clip(self.a.T.astype(np.int32) * 255 // LONE, 0, 255)]
+
+    def drop(self, row, col):
+        s = np.rot90(self.orbium, int(self.rng.integers(0, 4)))
+        ys = (np.arange(s.shape[0]) + row - s.shape[0] // 2) % self.l.h
+        xs = (np.arange(s.shape[1]) + col - s.shape[1] // 2) % self.l.w
+        self.a[np.ix_(ys, xs)] = np.maximum(self.a[np.ix_(ys, xs)], s)
+
+    def paint(self, x, y, left):
+        now = time.perf_counter()
+        if now - self.last_drop < 0.3:
+            return
+        self.last_drop = now
+        if left:
+            self.drop(x, y)  # screen x is the world's row, screen y its column
+        else:
+            ys = (np.arange(-15, 16) + x) % self.l.h
+            xs = (np.arange(-15, 16) + y) % self.l.w
+            self.a[np.ix_(ys, xs)] = 0
+
+    def press(self, e, x, y):
+        if e.key == pygame.K_r:
+            return self.start()
+        if e.key == pygame.K_c:
+            self.a[:] = 0
+            return "empty: click to drop Orbia"
+        return None
+
+    def status(self):
+        return f"  |  mass {self.a.sum() / LONE:.0f}"
+
+    def draw(self, r, rect):
+        r.gray(self.a, "lenia", LENIA_LUT, rect, top=1.0, rotate=True, key="lenia:a")
 
 
 TARGETS = [(-0.743643887037151, 0.131825904205330), (-0.761574, -0.0847596), (-1.768778833, -0.001738996),
@@ -399,12 +482,12 @@ del x
 
 # ---------------------------------------------------------------------------------------------
 
-EFFECTS = ["life", "brain", "wire", "gray", "mandel", "julia"]
+EFFECTS = ["life", "brain", "wire", "gray", "lenia", "mandel", "julia"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
+SCENES = [("lenia", None, 2), ("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
           ("life", "g", 3), ("brain", "soup", 1), ("julia", None, 3), ("gray", "bubbles", 4), ("mandel", 1, 2),
           ("life", "a", 4), ("wire", "soup", 1), ("gray", "spirals", 3), ("julia", None, 2), ("mandel", 2, 3),
-          ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
+          ("lenia", None, 3), ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
 
 
 def main():
@@ -457,6 +540,8 @@ def main():
                 made[name] = Reaction(sw, sh, dev.cols)
             elif name == "julia":
                 made[name] = Julia(sw, sh, dev.cols)
+            elif name == "lenia":
+                made[name] = LeniaFx(sw, sh, dev.cols)
             else:
                 made[name] = Fractal(sw, sh, dev.cols)
         return made[name]
@@ -476,7 +561,7 @@ def main():
         if sp is not None:
             cur.speed_i = sp
         cur.set_speed(cur.speed_i)
-        if what is not None or name == "julia":
+        if what is not None or name in ("julia", "lenia"):
             say(cur.start(what))
         note["title_until"] = time.perf_counter() + 4
 

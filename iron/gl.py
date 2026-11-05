@@ -64,14 +64,16 @@ void main() {
 
 GRAY = """
 #version 330
-uniform sampler2D chem;     // V, 1.0 = 4096
+uniform sampler2D chem;     // V, 1.0 = 4096 (Gray-Scott), or Lenia's cells
 uniform sampler2D lut;
 uniform vec2 texel;
+uniform float top;          // the value drawn as the highest point
+uniform int rotate;         // 1: world rows run left to right on the screen (Lenia's tall world)
 in vec2 uv;
 out vec4 color;
-float hgt(vec2 p) { return smoothstep(0.0, 0.45, texture(chem, p).r); }
+float hgt(vec2 p) { return smoothstep(0.0, top, texture(chem, p).r); }
 void main() {
-    vec2 p = vec2(uv.x, 1.0 - uv.y);
+    vec2 p = rotate == 1 ? vec2(1.0 - uv.y, uv.x) : vec2(uv.x, 1.0 - uv.y);
     float h = hgt(p);
     float dx = hgt(p + vec2(texel.x, 0.0)) - hgt(p - vec2(texel.x, 0.0));
     float dy = hgt(p - vec2(0.0, texel.y)) - hgt(p + vec2(0.0, texel.y));
@@ -250,12 +252,14 @@ class Renderer:
             if t is not None:
                 t.write(np.zeros(t.size[0] * t.size[1], np.float16).tobytes())
 
-    def gray(self, v, lut_name, lut_rgb, rect):
+    def gray(self, v, lut_name, lut_rgb, rect, top=0.45, rotate=False, key="gray:v"):
+        """A field (int16, 4096 = 1.0) as a lit height map. rotate: draw a tall world lying down."""
         h, w = v.shape
-        tex = self._tex("gray:v", (h, w), 1, "f4", nearest=False)
+        tex = self._tex(key, (h, w), 1, "f4", nearest=False)
         tex.write((v.astype(np.float32) / 4096.0).tobytes())
+        texel = (1.0 / h, 1.0 / w) if rotate else (1.0 / w, 1.0 / h)
         self._draw("gray", self.scene_fb, self._viewport(rect), chem=tex, lut=self.lut(lut_name, lut_rgb),
-                   texel=(1.0 / w, 1.0 / h))
+                   texel=texel, top=top, rotate=int(rotate))
 
     def mandel(self, counts, maxit, t, rect):
         h, w = counts.shape
