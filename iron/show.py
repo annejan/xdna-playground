@@ -15,7 +15,7 @@
   Gray-Scott   mouse left drops chemical, right wipes; p: next preset (coral, mitosis, worms, ...)
   Mandelbrot   mouse left: zoom towards there; right: zoom out; n: next place to dive into
   Julia        mouse left: take c in your hand and drag it; right: let go; n: somewhere else on the circle
-  Lenia        mouse left: drop an Orbium; right: wipe a spot; r: 14 new ones
+  Lenia        mouse left: drop an Orbium; right: wipe a spot; r: 8 new ones
 """
 
 import argparse
@@ -236,11 +236,11 @@ class LeniaFx:
         self.reset()
 
     def reset(self):
-        self.a = creatures(self.l.h, self.l.w, self.rng, count=14)
+        self.a = creatures(self.l.h, self.l.w, self.rng, count=8)
 
     def start(self, what=None):
         self.reset()
-        return "14 Orbia, gliding"
+        return "8 Orbia; a crash is fatal, the host lets a new one be born every second"
 
     def set_speed(self, i):
         self.l.steps = self.speeds[i]
@@ -250,6 +250,16 @@ class LeniaFx:
 
     def step(self):
         self.a, ms = self.l.run(self.a)
+        # Orbia die in crashes; keep the world from emptying: a new one every second while it is quiet
+        now = time.perf_counter()
+        if self.a.sum() < 8 * 70 * LONE and now - self.last_drop > 1.0:
+            self.last_drop = now
+            for _ in range(20):  # a quiet spot: nothing within reach of the ring
+                y, x = int(self.rng.integers(0, self.l.h)), int(self.rng.integers(0, self.l.w))
+                ys, xs = (np.arange(-36, 37) + y) % self.l.h, (np.arange(-36, 37) + x) % self.l.w
+                if not self.a[np.ix_(ys, xs)].any():
+                    self.drop(y, x)
+                    break
         return ms, self.l.steps
 
     def cells(self):

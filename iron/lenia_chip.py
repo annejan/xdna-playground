@@ -217,14 +217,19 @@ def lenia_np(a, steps):
 
 
 def creatures(h, w, rng, count=12):
-    """A world with `count` Orbia at random places, turned every which way."""
+    """A world with up to `count` Orbia, each in its own cell of a grid so they start well apart,
+    turned every which way and shifted a little."""
     a = np.zeros((h, w), np.int16)
     o = np.round(decode(ORBIUM) * ONE).astype(np.int16)
-    for _ in range(count):
+    gw = max(1, w // 72)  # 72 apart: the ring reaches 26 cells, so they leave each other alone
+    gh = max(1, h // 72)
+    spots = [(i, j) for i in range(gh) for j in range(gw)]
+    for k in rng.permutation(len(spots))[:count]:
+        i, j = spots[k]
         s = np.rot90(o, int(rng.integers(0, 4)))
-        y, x = int(rng.integers(0, h)), int(rng.integers(0, w))
-        ys, xs = (np.arange(s.shape[0]) + y) % h, (np.arange(s.shape[1]) + x) % w
-        a[np.ix_(ys, xs)] = np.maximum(a[np.ix_(ys, xs)], s)
+        y = i * (h // gh) + int(rng.integers(0, max(1, h // gh - s.shape[0])))
+        x = j * (w // gw) + int(rng.integers(0, max(1, w // gw - s.shape[1])))
+        a[y:y + s.shape[0], x:x + s.shape[1]] = s
     return a
 
 
