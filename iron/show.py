@@ -28,6 +28,7 @@ import numpy as np
 import pygame
 
 import aie.iron as iron
+import cv2
 from gl import Renderer
 from gray_chip import ONE, PRESETS, Gray
 from gray_chip import seed as gray_seed
@@ -508,21 +509,24 @@ def smoothstep(a, b, x):
 
 class TuringMirror(Reaction):
     """Gray-Scott that only lives where the camera sees light: you, drawn in living labyrinths.
-    Where it is dark the chemistry dies off; where it is light it grows back from new seeds."""
+    Where it is dark the chemistry fades; where it is light and empty, 5x5 drops of chemical start it
+    again (a single cell cannot grow). The camera mask is smoothed over time against sensor noise."""
 
     title = "Turing mirror"
 
     def __init__(self, sw, sh, cols):
         super().__init__(sw, sh, cols)
-        self.speeds = [21, 51, 101, 201, 401]
-        self.speed_i = 1
+        self.speeds = [51, 101, 201, 401, 801]
+        self.speed_i = 2
         self.g.preset = "coral"
         self.invert = False
+        self.alive = None
 
     def start(self, preset=None):
         self.g.preset = preset or "coral"
         self.reset()
-        return "stand in front of the camera" + ("" if camera().ok else " (no camera found)")
+        self.alive = None
+        return "stand in front of the camera, with some light on you" + ("" if camera().ok else " (no camera found)")
 
     def step(self):
         ms, n = super().step()
@@ -530,10 +534,13 @@ class TuringMirror(Reaction):
         if light is not None:
             if self.invert:
                 light = 1.0 - light
-            alive = smoothstep(0.3, 0.6, light)
-            self.v = (self.v * (0.5 + 0.5 * alive)).astype(np.int16)
+            new = smoothstep(0.35, 0.65, light)
+            self.alive = new if self.alive is None else 0.75 * self.alive + 0.25 * new
+            alive = self.alive
+            self.v = (self.v * (0.25 + 0.75 * alive)).astype(np.int16)
             self.u = (self.u + (ONE - self.u) * (1 - alive) * 0.5).astype(np.int16)
-            seed = (self.rng.random(self.v.shape) < 0.003 * alive) & (self.v < 100)
+            seed = (self.rng.random(self.v.shape) < 0.002 * alive * alive) & (self.v < 100)
+            seed = cv2.dilate(seed.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool) & (alive > 0.5)
             self.v[seed], self.u[seed] = ONE // 4, ONE // 2
         return ms, n
 
@@ -544,7 +551,11 @@ class TuringMirror(Reaction):
         return super().press(e, x, y)
 
     def status(self):
-        return super().status() + ("  |  no camera" if not camera().ok else "")
+        cam = camera()
+        if not cam.ok:
+            return super().status() + "  |  no camera"
+        dim = "  |  too dark: put some light on you" if cam.contrast < 40 else ""
+        return super().status() + dim
 
 
 class LifeMirror(Life):

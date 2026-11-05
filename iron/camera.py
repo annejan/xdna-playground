@@ -22,6 +22,7 @@ class Camera:
         self.prev = {}
         self.running = False
         self.thread = None
+        self.contrast = 0.0
         if cv2 is None:
             return
         self.cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
@@ -69,7 +70,9 @@ class Camera:
             f = f[(fh - ch) // 2:(fh + ch) // 2]
         g = cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA)[:, ::-1].astype(np.float32)
         lo, hi = np.percentile(g[::4, ::4], (5, 95))
-        return np.clip((g - lo) / max(hi - lo, 8.0), 0.0, 1.0)
+        self.contrast = float(hi - lo)
+        # stretch a dim picture, but not sensor noise: under 40 grey levels of contrast it stays dim
+        return np.clip((g - lo) / max(hi - lo, 40.0), 0.0, 1.0)
 
     def motion(self, w, h, key="default"):
         """How much each spot changed since the last call with this key: 0..1. None without a camera."""
