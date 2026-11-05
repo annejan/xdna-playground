@@ -11,7 +11,7 @@ openSUSE Tumbleweed and the `amdxdna` driver in the mainline kernel.
 
 | program | what it does |
 |---|---|
-| `iron/life_window.py` | Life, Brian's Brain and Wireworld on all 32 cores, in a window: trails, draw with the mouse, stamp patterns, a demo mode, up to 101 generations per frame |
+| `iron/life_window.py` | Life, Brian's Brain, Wireworld and the old demo fire on all 32 cores, in a window: trails, draw with the mouse, stamp patterns, a demo mode, up to 101 generations per frame |
 | `iron/life_chip.py` | the engine: the world stays on the chip, the cores swap their edge rows with their neighbours every generation |
 | `iron/rules.py` | the automata: each as a 64-cells-per-step vector body, scalar C for the edges, and numpy to check against |
 | `iron/life.py` | the first version: 8 cores, the host rebuilds the halos between calls; scalar and vector kernels |
@@ -39,6 +39,7 @@ The same engine with other rules (`life_chip.py --bench --gens 101 --rule ...`):
 |---|---:|---:|
 | Brian's Brain: off, firing, dying; fires with exactly 2 firing neighbours | 29,361 Mcell/s | 518 |
 | Wireworld: empty, electron head, tail, wire; a wire fires with 1 or 2 heads around | 27,858 Mcell/s | 959 |
+| Demo fire: a byte of heat, the 3 cells below move up a row, every 8th column cools | 30,654 Mcell/s | 1,079 |
 
 ## How the on-chip Life works
 
@@ -85,7 +86,7 @@ cd iron
 ../env.sh python life_window.py                     # 1024 x 768 world in a window
 ../env.sh python life_window.py --fit               # fullscreen, world sized to the screen (960 x 600 at 2x on 1920 x 1200)
 ../env.sh python life_window.py --fit --demo        # show mode: a new scene every 25 seconds
-../env.sh python life_window.py --rule wire         # start with Wireworld (or brain)
+../env.sh python life_window.py --rule fire         # start with the fire (or brain, wire)
 ../env.sh python life_chip.py --bench --gens 1001   # the race against numpy
 ../env.sh python life.py --bench 512 2048 --gens 7  # the 8-core version
 ../env.sh python mandel.py                          # Mandelbrot zoom in the terminal
@@ -97,8 +98,8 @@ Keys in `life_window.py`:
 
 | key | |
 |---|---|
-| `tab` | next rule: Life, Brian's Brain, Wireworld |
-| mouse left / right | draw / erase (Wireworld: wire) |
+| `tab` | next rule: Life, Brian's Brain, Wireworld, fire |
+| mouse left / right | draw / erase (Wireworld: wire, fire: paint fire) |
 | `e` | Wireworld: an electron at the mouse |
 | `m` | demo mode on / off |
 | `1` .. `5` | 1, 3, 9, 33 or 101 generations per frame |

@@ -39,6 +39,21 @@ def wire_np(c):
     return out
 
 
+def avg(a, b):
+    """floor((a + b) / 2) without leaving 8 bits, the same way the kernel does it."""
+    return (a >> 1) + (b >> 1) + (a & b & 1)
+
+
+FIRE_COOL = 8  # every 8th column cools down by 1 per row
+
+
+def fire_np(c):
+    dn = np.roll(c, -1, 0)
+    h = avg(dn, avg(np.roll(dn, 1, 1), np.roll(dn, -1, 1)))
+    cool = (np.arange(c.shape[1]) % FIRE_COOL == 0).astype(np.uint8)
+    return (np.maximum(h, cool) - cool).astype(np.uint8)
+
+
 RULES = {
     # Conway's Life: born with 3 neighbours, survives with 2 or 3
     "life": {
@@ -84,6 +99,28 @@ RULES = {
             res = aie::select(res, one, fire);""",
         "numpy": wire_np,
     },
+}
+
+
+# Demo fire: a byte of heat per cell, each generation the heat of the 3 cells below moves up one
+# row (half from straight below, a quarter from each side), and every 8th column cools down by 1.
+# The host keeps putting fuel on the bottom rows.
+RULES["fire"] = {
+    "states": 256,
+    "prelude": """
+    aie::vector<uint8_t, 64> cool;
+    for (int i = 0; i < 64; i++) cool[i] = (i % 8) == 0;""",
+    "vector": """
+            auto avg = [&](auto a, auto b) {
+                return aie::add(aie::add(aie::downshift(a, 1), aie::downshift(b, 1)), aie::bit_and(aie::bit_and(a, b), one));
+            };
+            auto heat = avg(dc, avg(dl, dr));
+            auto res = aie::sub(aie::max(heat, cool), cool);
+            (void)ul; (void)uc; (void)ur; (void)ml; (void)mc; (void)mr;""",
+    "cell": ("int a = (dn[l] >> 1) + (dn[rt] >> 1) + (dn[l] & dn[rt] & 1); "
+             "int h = (dn[cc] >> 1) + (a >> 1) + (dn[cc] & a & 1); "
+             "int k = (cc % 8) == 0; o[cc] = h > k ? h - k : 0;"),
+    "numpy": fire_np,
 }
 
 
@@ -141,6 +178,8 @@ def feed(cells, sources, gen, gens):
 
 
 def seed(rule, shape, rng, fill=0.3):
+    if rule == "fire":
+        return rng.integers(0, 256, shape, dtype=np.uint8)
     if rule == "wire":
         cells, sources = maze(*shape, rng)
         cells[[y for y, _, _ in sources], [x for _, x, _ in sources]] = 1  # one pulse per root to start

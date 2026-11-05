@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Cellular automata on 32 NPU cores, in a window: Life, Brian's Brain and Wireworld.
+"""Cellular automata on 32 NPU cores, in a window: Life, Brian's Brain, Wireworld and demo fire.
 
   ../env.sh python life_window.py              1024x768 world
   ../env.sh python life_window.py --fit        fullscreen, the world sized to fill the screen
   ../env.sh python life_window.py --demo 25    show mode: a new scene every 25 seconds
   ../env.sh python life_window.py --rule wire
 
-  tab                  next rule: life, brain, wire
-  mouse left / right   draw / erase (wire: draws wire)
+  tab                  next rule: life, brain, wire, fire
+  mouse left / right   draw / erase (wire: draws wire, fire: paints fire)
   e                    wire: an electron at the mouse (r: a new maze of lightning)
   space                pause, s = one step while paused
   1 2 3 4 5            1, 3, 9, 33 or 101 generations per frame (the first use compiles it)
@@ -32,8 +32,8 @@ from patterns import SHAPES, stamp
 from rules import feed, maze, seed
 
 SPEEDS = [1, 3, 9, 33, 101]
-ORDER = ["life", "brain", "wire"]
-TITLES = {"life": "Conway's Life", "brain": "Brian's Brain", "wire": "Wireworld"}
+ORDER = ["life", "brain", "wire", "fire"]
+TITLES = {"life": "Conway's Life", "brain": "Brian's Brain", "wire": "Wireworld", "fire": "Demo fire"}
 
 
 def lut(stops):
@@ -45,10 +45,14 @@ def lut(stops):
 # inferno-ish fire for Life, ice for Brian's Brain
 FIRE = lut([(0.0, (0, 0, 4)), (0.15, (31, 12, 72)), (0.35, (85, 15, 109)), (0.55, (136, 34, 106)),
             (0.7, (186, 54, 85)), (0.82, (227, 89, 51)), (0.92, (249, 140, 10)), (1.0, (249, 201, 50))])
+FLAME = lut([(0.0, (0, 0, 0)), (0.2, (70, 0, 0)), (0.4, (190, 25, 0)), (0.6, (255, 110, 0)),
+             (0.8, (255, 210, 40)), (1.0, (255, 255, 230))])
 ICE = lut([(0.0, (0, 0, 6)), (0.3, (8, 20, 70)), (0.6, (20, 70, 170)), (0.85, (60, 160, 240)), (1.0, (150, 230, 255))])
 
 
 def colorize(rule, cells, heat, fade):
+    if rule == "fire":
+        return FLAME[cells]
     heat *= fade
     heat[cells == 1] = 1.0
     if rule == "life":
@@ -98,6 +102,7 @@ class World:
         self.cells = np.zeros((chip.h, chip.w), np.uint8)
         self.heat = np.zeros(self.cells.shape, np.float32)
         self.sources = []  # Wireworld: roots that get an electron every so many generations
+        self.fuel = None  # fire: where the fuel clumps are, drifting slowly
         self.reset()
 
     def set_rule(self, rule):
@@ -107,6 +112,8 @@ class World:
     def reset(self):
         if self.chip.rule == "wire":
             self.cells, self.sources = maze(*self.cells.shape, self.rng)
+        elif self.chip.rule == "fire":
+            self.cells, self.sources = np.zeros(self.cells.shape, np.uint8), []
         else:
             self.cells, self.sources = seed(self.chip.rule, self.cells.shape, self.rng, self.fill), []
         self.heat[:] = 0
@@ -115,6 +122,21 @@ class World:
         self.cells[:] = 0
         self.heat[:] = 0
         self.sources = []
+
+    def stoke(self):
+        """Fire: fuel on the bottom rows, in clumps of about 25 cells that drift slowly, so the
+        flames form tongues instead of an even glow."""
+        w = self.cells.shape[1]
+
+        def clumps():
+            v = self.rng.random(w)
+            k = np.ones(25) / 25
+            return np.convolve(np.concatenate([v[-12:], v, v[:12]]), k, "valid")
+
+        new = clumps()
+        self.fuel = new if self.fuel is None else 0.92 * self.fuel + 0.08 * new
+        hot = (self.fuel - self.fuel.mean()) / (self.fuel.std() + 1e-9) > 0.2
+        self.cells[-4:] = np.where(hot & (self.rng.random(w) < 0.9), 255, 0).astype(np.uint8)
 
     def fleet(self, key, x=None, y=None, turn=0):
         name, shape = SHAPES[key]
@@ -127,8 +149,9 @@ class World:
 
 
 # demo scenes: (rule, start: "soup" or a pattern key for a fleet of 12, speed index)
-SCENES = [("life", "soup", 1), ("life", "g", 2), ("brain", "soup", 0), ("life", "a", 3),
-          ("wire", "soup", 0), ("life", "l", 3), ("brain", "soup", 1), ("life", "n", 2), ("life", "p", 4)]
+SCENES = [("life", "soup", 1), ("life", "g", 2), ("brain", "soup", 0), ("fire", "soup", 0), ("life", "a", 3),
+          ("wire", "soup", 0), ("life", "l", 3), ("brain", "soup", 1), ("life", "n", 2), ("fire", "soup", 1),
+          ("life", "p", 4)]
 
 
 def main():
@@ -170,10 +193,17 @@ def main():
     def say(text, seconds=2.5):
         state["message"], state["message_until"] = text, time.perf_counter() + seconds
 
+    def view():
+        """The part of the world on screen: all of it, or for fire the bottom half, stretched 2x
+        vertically (long tongues, like the double-height pixels of the old demo fires)."""
+        top = vh // 2 if chip.rule == "fire" else 0
+        return top, vh - top
+
     def mouse_cell():
         r = place(screen, vw, vh)
+        top, rows = view()
         mx, my = pygame.mouse.get_pos()
-        return (mx - r.x) * vw // max(1, r.w), (my - r.y) * vh // max(1, r.h)
+        return (mx - r.x) * vw // max(1, r.w), top + (my - r.y) * rows // max(1, r.h)
 
     def scene(i):
         rule, start, sp = SCENES[i % len(SCENES)]
@@ -241,14 +271,16 @@ def main():
         buttons = pygame.mouse.get_pressed()
         if buttons[0] or buttons[2]:
             x, y = mouse_cell()
-            radius = 0 if chip.rule == "wire" else 3
+            radius = {"wire": 0, "fire": 6}.get(chip.rule, 3)
             ys, xs = np.ogrid[-radius:radius + 1, -radius:radius + 1]
             disc = xs * xs + ys * ys <= radius * radius
             yy, xx = (ys + y) % chip.h, (xs + x) % chip.w
-            pen = (3 if chip.rule == "wire" else 1) if buttons[0] else 0
+            pen = {"wire": 3, "fire": 255}.get(chip.rule, 1) if buttons[0] else 0
             world.cells[yy, xx] = np.where(disc, pen, world.cells[yy, xx])
 
         if not paused or step:
+            if chip.rule == "fire":
+                world.stoke()
             if (chip.rule, chip.gens) not in compiled:
                 hud(screen, font, f"compiling the {chip.rule} kernel for {chip.gens} generations per call ...")
                 pygame.display.flip()
@@ -265,7 +297,8 @@ def main():
             rate, gens_done, t_rate = gens_done / (now - t_rate), 0, now
 
         rgb = colorize(chip.rule, world.cells, world.heat, args.fade)
-        surf = pygame.surfarray.make_surface(rgb[:vh, :vw].swapaxes(0, 1))
+        top, rows = view()
+        surf = pygame.surfarray.make_surface(rgb[top:top + rows, :vw].swapaxes(0, 1))
         r = place(screen, vw, vh)
         screen.fill((0, 0, 0))
         screen.blit(pygame.transform.scale(surf, r.size), r.topleft)

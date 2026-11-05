@@ -44,8 +44,7 @@ CELL = """
 #define NEXT(m, s) {next}
 #define CELL(c) do {{ \\
     int cc = (c), l = cc ? cc - 1 : {w} - 1, rt = cc == {w} - 1 ? 0 : cc + 1; \\
-    int s = ON(up[l]) + ON(up[cc]) + ON(up[rt]) + ON(mid[l]) + ON(mid[rt]) + ON(dn[l]) + ON(dn[cc]) + ON(dn[rt]); \\
-    o[cc] = NEXT(mid[cc], s); \\
+    {cell} \\
 }} while (0)
 """
 
@@ -58,6 +57,7 @@ void {rule}_step(uint8_t *src, uint8_t *dst, uint8_t *above, uint8_t *below) {{
     const auto two = aie::broadcast<uint8_t, 64>(2);
     const auto three = aie::broadcast<uint8_t, 64>(3);
     (void)two;
+{prelude}
     for (int r = 0; r < {rows}; r++) {{
         const uint8_t *up = r ? src + (r - 1) * {w} : above + {pad};
         const uint8_t *mid = src + r * {w};
@@ -79,6 +79,10 @@ void {rule}_step(uint8_t *src, uint8_t *dst, uint8_t *above, uint8_t *below) {{
 }}
 }}
 """
+
+# the scalar cell of the counting rules: how many neighbours are ON, then NEXT
+COUNT_CELL = ("int s = ON(up[l]) + ON(up[cc]) + ON(up[rt]) + ON(mid[l]) + ON(mid[rt]) + ON(dn[l]) + ON(dn[cc]) "
+              "+ ON(dn[rt]); o[cc] = NEXT(mid[cc], s);")
 
 ROW = """
 extern "C" {{
@@ -109,7 +113,8 @@ def life_chip(world: In, out: Out, *, w: CompileTime[int], rows: CompileTime[int
     edge_ty = np.ndarray[(w + 2 * PAD,), np.dtype[np.uint8]]
 
     r = RULES[rule]
-    fmt = {"w": w, "rows": rows, "pad": PAD, "rule": rule, "on": r["on"], "next": r["next"], "vector": r["vector"]}
+    fmt = {"w": w, "rows": rows, "pad": PAD, "rule": rule, "on": r.get("on", "(v)"), "next": r.get("next", "0"),
+           "vector": r["vector"], "cell": r.get("cell", COUNT_CELL), "prelude": r.get("prelude", "")}
     step = ExternalFunction(f"{rule}_step", source_string=CELL.format(**fmt) + STEP.format(**fmt),
                             arg_types=[band_ty, band_ty, edge_ty, edge_ty])
     row = ExternalFunction(f"{rule}_row", source_string=CELL.format(**fmt) + ROW.format(**fmt),
