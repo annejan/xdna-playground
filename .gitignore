@@ -7,3 +7,4 @@
 /dl
 __pycache__/
 *.png
+/riscv/bin
