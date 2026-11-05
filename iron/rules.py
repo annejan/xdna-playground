@@ -94,30 +94,55 @@ def cpu(cells, gens, rule="life"):
     return cells
 
 
-def circuit(h, w, rng):
-    """Wireworld start: rows of clocks. Each clock is a loop of wire with electrons going round; its
-    size sets the rhythm. Each sends its pulses down an output wire that ends in nothing, some with
-    a fork. Nothing leads back into a loop, so the circuit never fills up with electrons."""
+def maze(h, w, rng, spacing=3, roots=None, cover=0.9):
+    """Wireworld start: a forest of random trees made of wire, grown from a few roots at once.
+
+    Nodes sit every `spacing` cells and branches run between them, so wires never touch except
+    where they join. A tree has no loops: a pulse sent in at a root splits at every fork, runs out to
+    the dead ends and is gone. Feed the roots now and then (`sources`) and you get lightning.
+    Returns the cells and the sources: (y, x, period in generations) per root."""
+    ny, nx = (h - 2) // spacing, (w - 2) // spacing
+    roots = roots or max(4, ny * nx // 1600)
+    owner = np.full((ny, nx), -1)
     c = np.zeros((h, w), np.uint8)
-    for r in range(2, h - 10, 10):
-        x0 = 2 + int(rng.integers(0, 12))
-        lw, lh = int(rng.integers(5, 26)), 4
-        c[r, x0:x0 + lw + 1] = c[r + lh, x0:x0 + lw + 1] = 3
-        c[r:r + lh + 1, x0] = c[r:r + lh + 1, x0 + lw] = 3
-        for _ in range(int(rng.integers(1, 3))):  # electrons on the bottom edge, moving right
-            x = x0 + 2 + int(rng.integers(0, max(1, lw - 3)))
-            c[r + lh, x], c[r + lh, x - 1] = 1, 2
-        y = r + lh // 2  # output wire from the right side of the loop
-        end = min(w - 3, x0 + lw + 1 + int(rng.integers(w // 3, w)))
-        c[y, x0 + lw + 1:end] = 3
-        if rng.random() < 0.6:  # a fork 3 rows down, into the gap before the next row of clocks
-            fx = int(rng.integers(x0 + lw + 6, max(x0 + lw + 7, end - 10)))
-            c[y + 1:y + 4, fx] = 3
-            c[y + 3, fx:min(w - 3, fx + int(rng.integers(20, w // 2)))] = 3
-    return c
+    frontier, sources = [], []
+    for k in range(roots):
+        y, x = int(rng.integers(0, ny)), int(rng.integers(0, nx))
+        if owner[y, x] >= 0:
+            continue
+        owner[y, x] = k
+        c[1 + y * spacing, 1 + x * spacing] = 3
+        sources.append((1 + y * spacing, 1 + x * spacing, int(rng.integers(6, 30))))
+        frontier.append((y, x))
+    target, grown = cover * ny * nx, len(frontier)
+    while frontier and grown < target:
+        i = int(rng.integers(0, len(frontier)))
+        y, x = frontier[i]
+        free = [(y + dy, x + dx) for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                if 0 <= y + dy < ny and 0 <= x + dx < nx and owner[y + dy, x + dx] < 0]
+        if not free:
+            frontier[i] = frontier[-1]
+            frontier.pop()
+            continue
+        ty, tx = free[int(rng.integers(0, len(free)))]
+        owner[ty, tx] = owner[y, x]
+        y0, x0, y1, x1 = 1 + y * spacing, 1 + x * spacing, 1 + ty * spacing, 1 + tx * spacing
+        c[min(y0, y1):max(y0, y1) + 1, min(x0, x1):max(x0, x1) + 1] = 3
+        frontier.append((ty, tx))
+        grown += 1
+    return c, sources
+
+
+def feed(cells, sources, gen, gens):
+    """Send an electron in at every source whose period came round in the last `gens` generations."""
+    for y, x, period in sources:
+        if gen // period != (gen - gens) // period and cells[y, x] == 3:
+            cells[y, x] = 1
 
 
 def seed(rule, shape, rng, fill=0.3):
     if rule == "wire":
-        return circuit(*shape, rng)
+        cells, sources = maze(*shape, rng)
+        cells[[y for y, _, _ in sources], [x for _, x, _ in sources]] = 1  # one pulse per root to start
+        return cells
     return (rng.random(shape) < fill).astype(np.uint8)

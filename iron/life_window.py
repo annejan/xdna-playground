@@ -8,7 +8,7 @@
 
   tab                  next rule: life, brain, wire
   mouse left / right   draw / erase (wire: draws wire)
-  e                    wire: an electron at the mouse
+  e                    wire: an electron at the mouse (r: a new maze of lightning)
   space                pause, s = one step while paused
   1 2 3 4 5            1, 3, 9, 33 or 101 generations per frame (the first use compiles it)
   r / c                new start / clear
@@ -29,7 +29,7 @@ import pygame
 import aie.iron as iron
 from life_chip import BAND_MAX, ROWS, Chip
 from patterns import SHAPES, stamp
-from rules import seed
+from rules import feed, maze, seed
 
 SPEEDS = [1, 3, 9, 33, 101]
 ORDER = ["life", "brain", "wire"]
@@ -63,7 +63,7 @@ def colorize(rule, cells, heat, fade):
         rgb = np.zeros(cells.shape + (3,), np.uint8)
         wire = cells == 3
         glow = heat[wire][:, None]
-        rgb[wire] = np.clip(np.array([110, 62, 22]) + glow * np.array([145, 150, 120]), 0, 255)
+        rgb[wire] = np.clip(np.array([48, 26, 10]) + glow * np.array([190, 220, 245]), 0, 255)
         rgb[cells == 2] = (255, 70, 40)
         rgb[cells == 1] = (140, 220, 255)
     return rgb
@@ -95,20 +95,26 @@ class World:
 
     def __init__(self, chip, vw, vh, fill, rng):
         self.chip, self.vw, self.vh, self.fill, self.rng = chip, vw, vh, fill, rng
-        self.cells = seed(chip.rule, (chip.h, chip.w), rng, fill)
+        self.cells = np.zeros((chip.h, chip.w), np.uint8)
         self.heat = np.zeros(self.cells.shape, np.float32)
+        self.sources = []  # Wireworld: roots that get an electron every so many generations
+        self.reset()
 
     def set_rule(self, rule):
         self.chip.rule = rule
         self.reset()
 
     def reset(self):
-        self.cells = seed(self.chip.rule, self.cells.shape, self.rng, self.fill)
+        if self.chip.rule == "wire":
+            self.cells, self.sources = maze(*self.cells.shape, self.rng)
+        else:
+            self.cells, self.sources = seed(self.chip.rule, self.cells.shape, self.rng, self.fill), []
         self.heat[:] = 0
 
     def clear(self):
         self.cells[:] = 0
         self.heat[:] = 0
+        self.sources = []
 
     def fleet(self, key, x=None, y=None, turn=0):
         name, shape = SHAPES[key]
@@ -249,6 +255,8 @@ def main():
                 compiled.add((chip.rule, chip.gens))
             world.cells, ms = chip.run(world.cells)
             gen += chip.gens
+            if world.sources:
+                feed(world.cells, world.sources, gen, chip.gens)
             gens_done += chip.gens
             step = False
 
