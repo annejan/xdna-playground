@@ -615,13 +615,13 @@ del x
 
 # ---------------------------------------------------------------------------------------------
 
-EFFECTS = ["mirror", "hand", "wave", "life", "brain", "wire", "gray", "lenia", "mandel", "julia"]
+EFFECTS = ["julia", "mandel", "hand", "life", "brain", "wire", "gray", "lenia", "mirror", "wave"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("mirror", "coral", 1), ("hand", None, 2), ("wave", None, 0), ("lenia", None, 2), ("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
-          ("life", "g", 3), ("brain", "soup", 1), ("julia", None, 3), ("gray", "bubbles", 4), ("mandel", 1, 2),
-          ("life", "a", 4), ("wire", "soup", 1), ("gray", "spirals", 3), ("julia", None, 2), ("mandel", 2, 3),
-          ("lenia", None, 3), ("mirror", "spirals", 2), ("life", "l", 4), ("hand", None, 2), ("gray", "waves", 3),
-          ("mandel", 3, 2)]
+# demo scenes: (effect, start, speed index). Fractals first: they never settle, an automaton left
+# alone always does (the mirrors need a lit room, so they stay under tab)
+SCENES = [("julia", None, 2), ("mandel", 0, 2), ("life", "g", 4), ("julia", None, 3), ("mandel", 1, 2),
+          ("life", "soup", 4), ("julia", None, 2), ("mandel", 2, 3), ("julia", None, 4), ("mandel", 3, 2),
+          ("life", "a", 4), ("mandel", 4, 2)]
 
 
 def main():
@@ -629,7 +629,7 @@ def main():
     p.add_argument("--fit", action="store_true", help="fullscreen")
     p.add_argument("--demo", type=float, nargs="?", const=25, metavar="SECONDS",
                    help="show mode: a new scene every SECONDS (default 25)")
-    p.add_argument("--effect", choices=EFFECTS, default="mirror")
+    p.add_argument("--effect", choices=EFFECTS, default="julia")
     p.add_argument("--fade", type=float, default=0.93)
     p.add_argument("--cpu-render", action="store_true", help="draw with numpy + pygame, not the GPU")
     args = p.parse_args()
