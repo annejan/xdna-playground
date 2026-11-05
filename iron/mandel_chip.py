@@ -150,12 +150,19 @@ class Mandel:
 
     def coords(self, cx, cy, width):
         """Q28 c for every pixel of a view centred on (cx, cy), `width` wide, padded with far-away points."""
-        xs = cx + (np.arange(self.w) / self.w - 0.5) * width
-        ys = cy + (np.arange(self.h) / self.h - 0.5) * width * self.h / self.w
-        gx = np.full(self.n, 4 << FRAC, np.int64)
-        gy = np.zeros(self.n, np.int64)
-        gx[:self.w * self.h] = np.round(np.tile(xs, self.h) * (1 << FRAC))
-        gy[:self.w * self.h] = np.round(np.repeat(ys, self.w) * (1 << FRAC))
+        if not hasattr(self, "_xi"):
+            k = np.arange(self.n)
+            real = k < self.w * self.h
+            self._xi = np.where(real, k % self.w, 0).astype(np.int64)
+            self._yi = np.where(real, k // self.w, 0).astype(np.int64)
+            self._pad = ~real
+        step = width / self.w
+        x0 = round((cx - width / 2) * (1 << FRAC))
+        y0 = round((cy - step * self.h / 2) * (1 << FRAC))
+        dq = round(step * (1 << FRAC))
+        gx = x0 + self._xi * dq
+        gy = y0 + self._yi * dq
+        gx[self._pad], gy[self._pad] = 4 << FRAC, 0
         return gx.astype(np.int32), gy.astype(np.int32)
 
     def pack(self, gx, gy):

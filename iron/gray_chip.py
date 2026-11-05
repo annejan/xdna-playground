@@ -36,13 +36,14 @@ ONE = 4096  # Q12
 LANES = 32  # int16 lanes in a 512-bit vector
 CELLS_MAX = 5120  # cells per core: in + out buffers of 2 x int16 per cell = 40 KB, plus the edge buffers
 
-# (F, k) from Pearson's map; Karl Sims' names
+# (F, k) that keep moving with these diffusion constants (Du 3/16, Dv 3/32), measured: the classic
+# coral, mitosis and worms settings either freeze or die out here
 PRESETS = {
-    "coral": (0.0545, 0.062),
-    "mitosis": (0.0367, 0.0649),
-    "worms": (0.078, 0.061),
-    "spots": (0.03, 0.062),
-    "waves": (0.014, 0.045),
+    "spirals": (0.018, 0.051),   # cells that keep dividing
+    "waves": (0.014, 0.045),     # blobs that wobble, merge and split
+    "bubbles": (0.012, 0.05),    # foam
+    "pulse": (0.025, 0.06),      # slow pulsing spots
+    "coral": (0.0545, 0.062),    # grows over everything, then stands still
 }
 
 
@@ -126,7 +127,7 @@ void gs_row_{preset}(int16_t *band, int16_t *edge, int32_t r) {{
 
 @iron.jit
 def gray_chip(world: In, out: Out, *, w: CompileTime[int], rows: CompileTime[int], steps: CompileTime[int],
-              cols: CompileTime[int], preset: CompileTime[str] = "coral"):
+              cols: CompileTime[int], preset: CompileTime[str] = "spirals"):
     cores = cols * ROWS
     band = 2 * rows * w
     n = cores * band
@@ -228,7 +229,7 @@ def seed(h, w, rng, blobs=None):
 
 
 class Gray:
-    def __init__(self, w, h, steps, cols, preset="coral"):
+    def __init__(self, w, h, steps, cols, preset="spirals"):
         self.w = max(LANES, w - w % LANES)
         self.cores = cols * ROWS
         self.rows = max(1, min(-(-h // self.cores), CELLS_MAX // self.w))
@@ -264,7 +265,7 @@ def main():
     p.add_argument("--steps", type=int, default=1001, help="steps per NPU call, odd")
     p.add_argument("--size", nargs=2, type=int, default=(512, 320), metavar=("W", "H"))
     p.add_argument("--calls", type=int, default=5)
-    p.add_argument("--preset", choices=sorted(PRESETS), default="coral")
+    p.add_argument("--preset", choices=sorted(PRESETS), default="spirals")
     args = p.parse_args()
     if args.steps % 2 == 0:
         sys.exit("--steps must be odd")

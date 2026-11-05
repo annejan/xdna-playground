@@ -116,15 +116,15 @@ class Life:
 
 
 PALETTES = {
-    "coral": lut([(0.0, (4, 8, 28)), (0.3, (10, 50, 100)), (0.55, (30, 150, 170)), (0.8, (200, 235, 210)),
-                  (1.0, (255, 255, 255))]),
-    "mitosis": lut([(0.0, (10, 2, 20)), (0.35, (80, 10, 90)), (0.6, (210, 50, 140)), (0.85, (255, 190, 210)),
+    "spirals": lut([(0.0, (4, 8, 28)), (0.3, (10, 50, 100)), (0.55, (30, 150, 170)), (0.8, (200, 235, 210)),
                     (1.0, (255, 255, 255))]),
-    "worms": lut([(0.0, (5, 15, 5)), (0.35, (20, 80, 30)), (0.6, (120, 190, 40)), (0.85, (240, 240, 140)),
-                  (1.0, (255, 255, 255))]),
-    "spots": lut([(0.0, (20, 10, 0)), (0.35, (110, 50, 0)), (0.6, (230, 140, 20)), (0.85, (255, 230, 150)),
-                  (1.0, (255, 255, 255))]),
     "waves": lut([(0.0, (0, 0, 10)), (0.3, (30, 20, 120)), (0.6, (120, 80, 230)), (0.85, (220, 200, 255)),
+                  (1.0, (255, 255, 255))]),
+    "bubbles": lut([(0.0, (10, 2, 20)), (0.35, (80, 10, 90)), (0.6, (210, 50, 140)), (0.85, (255, 190, 210)),
+                    (1.0, (255, 255, 255))]),
+    "pulse": lut([(0.0, (20, 10, 0)), (0.35, (110, 50, 0)), (0.6, (230, 140, 20)), (0.85, (255, 230, 150)),
+                  (1.0, (255, 255, 255))]),
+    "coral": lut([(0.0, (5, 15, 5)), (0.35, (20, 80, 30)), (0.6, (120, 190, 40)), (0.85, (240, 240, 140)),
                   (1.0, (255, 255, 255))]),
 }
 
@@ -151,7 +151,7 @@ class Reaction:
         self.vw, self.vh = fit_gray(sw, sh, cols * ROWS)
         self.speeds = [11, 51, 151, 401, 801]
         self.speed_i, self.bloom = 3, 0.45
-        self.g = Gray(self.vw, self.vh, self.speeds[self.speed_i], cols, "coral")
+        self.g = Gray(self.vw, self.vh, self.speeds[self.speed_i], cols, "spirals")
         self.rng = np.random.default_rng()
         self.reset()
 
@@ -219,12 +219,13 @@ class Fractal:
     title = "Mandelbrot"
 
     def __init__(self, sw, sh, cols):
-        s = max(1, math.ceil(math.sqrt(sw * sh / 600_000)))  # about 600k pixels: a frame in ~20 ms
+        s = max(1, math.ceil(math.sqrt(sw * sh / 450_000)))  # about 450k pixels: a frame in ~15 ms
         self.vw, self.vh = sw // s, sh // s
         self.m = Mandel(self.vw, self.vh, cols)
-        self.speeds = [0.995, 0.99, 0.985, 0.975, 0.96]  # zoom per frame
+        self.speeds = [0.75, 0.6, 0.45, 0.3, 0.15]  # width left after a second: zoom by time, not by frame
         self.speed_i, self.bloom = 2, 0.5
         self.zoom_step = self.speeds[self.speed_i]
+        self.last = None
         self.t = 0
         self.target = 0
         self.start(0)
@@ -241,9 +242,18 @@ class Fractal:
     def set_speed(self, i):
         self.zoom_step = self.speeds[i]
 
+    LEVELS = (512, 1024, 2048)
+
     def maxit(self):
         z = 3.2 / self.width
-        return 256 if z < 50 else 1024 if z < 5000 else 4096
+        return self.LEVELS[0] if z < 50 else self.LEVELS[1] if z < 5000 else self.LEVELS[2]
+
+    def warm(self):
+        """Compile every maxit level now, not in the middle of a dive."""
+        for m in self.LEVELS:
+            self.m.maxit = m
+            self.m.run(-0.6, 0.0, 3.2)
+        return [("mandel", m) for m in self.LEVELS]
 
     def key(self):
         return ("mandel", self.maxit())
@@ -251,12 +261,16 @@ class Fractal:
     def step(self):
         self.m.maxit = self.maxit()
         self.counts, ms = self.m.run(self.cx, self.cy, self.width)
-        self.cx += (self.tx - self.cx) * 0.04
-        self.cy += (self.ty - self.cy) * 0.04
-        self.width *= self.zoom_step
+        now = time.perf_counter()
+        dt = min(0.1, now - self.last) if self.last else 1 / 60
+        self.last = now
+        ease = 1 - 0.08 ** dt  # glide to the target, the same speed whatever the frame rate
+        self.cx += (self.tx - self.cx) * ease
+        self.cy += (self.ty - self.cy) * ease
+        self.width *= self.zoom_step ** dt
         if self.width < self.vw * 2 ** -FRAC * 4:  # Q28 runs out of bits: next place
             self.reset()
-        self.t += 1
+        self.t += dt * 60
         return ms, 1
 
     def cells(self):
@@ -277,7 +291,7 @@ class Fractal:
         if left:
             self.tx, self.ty = self.plane(x, y)
         else:
-            self.width = min(3.2, self.width * 1.05)
+            self.width = min(3.2, self.width * 1.03)
 
     def press(self, e, x, y):
         if e.key in (pygame.K_n, pygame.K_r):
@@ -300,9 +314,9 @@ del x
 
 EFFECTS = ["life", "brain", "wire", "gray", "mandel"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("gray", "coral", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "mitosis", 4), ("life", "g", 3),
-          ("brain", "soup", 1), ("gray", "worms", 3), ("mandel", 1, 2), ("life", "a", 4), ("wire", "soup", 1),
-          ("gray", "spots", 4), ("mandel", 2, 3), ("life", "l", 4), ("gray", "waves", 4), ("mandel", 3, 2)]
+SCENES = [("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4), ("life", "g", 3),
+          ("brain", "soup", 1), ("gray", "bubbles", 4), ("mandel", 1, 2), ("life", "a", 4), ("wire", "soup", 1),
+          ("gray", "spirals", 3), ("mandel", 2, 3), ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
 
 
 def main():
@@ -383,6 +397,28 @@ def main():
 
     paused, single, show_help = False, False, False
     compiled = set()
+
+    def warm_up():
+        """Compile every kernel the demo needs before it starts, so the show never stops to compile."""
+        todo = list(dict.fromkeys((n, w, sp) for n, w, sp in SCENES))
+        for i, (n, w, sp) in enumerate(todo):
+            if use_gl:
+                ctx.screen.use()
+                ctx.clear(0.0, 0.0, 0.0)
+            else:
+                screen.fill((0, 0, 0))
+            text(big, f"warming up the NPU: {i + 1} / {len(todo)}", x=40, y=sh // 2 - 30)
+            pygame.display.flip()
+            pygame.event.pump()
+            switch(n, w, sp)
+            if n == "mandel":
+                compiled.update(cur.warm())
+            elif cur.key() not in compiled:
+                cur.step()
+                compiled.add(cur.key())
+
+    if args.demo:
+        warm_up()
     demo, demo_i, next_scene = args.demo, 0, time.perf_counter()
     t_rate, steps_done, npu_ms, rate, busy = time.perf_counter(), 0, 0.0, 0.0, 0.0
     running = True
