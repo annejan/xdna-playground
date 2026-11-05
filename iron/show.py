@@ -14,6 +14,7 @@
   Life & co    mouse draws; g n p a d l w x v u stamp patterns (shift: 12); e: electron (Wireworld)
   Gray-Scott   mouse left drops chemical, right wipes; p: next preset (coral, mitosis, worms, ...)
   Mandelbrot   mouse left: zoom towards there; right: zoom out; n: next place to dive into
+  Julia        mouse left: take c in your hand and drag it; right: let go; n: somewhere else on the circle
 """
 
 import argparse
@@ -305,6 +306,92 @@ class Fractal:
         r.mandel(self.counts, self.m.maxit, self.t * 0.004, rect)
 
 
+class Julia:
+    """Julia sets that morph: c walks just outside the edge of the Mandelbrot set's main cardioid,
+    where the Julia sets are intricate (measured: 25-35% of the picture is filigree), and rushes past
+    the cusp at c = 1/4, where they turn to dust. Every frame a new fractal.
+    Mouse left: take c in your hand (it follows the mouse over the complex plane); right: let go."""
+
+    smooth = False
+    unit = "frame"
+    title = "Julia sets"
+    MAXIT = 256
+
+    def __init__(self, sw, sh, cols):
+        s = max(1, math.ceil(math.sqrt(sw * sh / 450_000)))
+        self.vw, self.vh = sw // s, sh // s
+        self.m = Mandel(self.vw, self.vh, cols, self.MAXIT, julia=True)
+        self.speeds = [0.04, 0.08, 0.15, 0.3, 0.6]  # radians per second along the circle
+        self.speed_i, self.bloom = 2, 0.55
+        self.angle, self.t, self.last, self.hand = 0.0, 0.0, None, None
+        self.width = 3.3
+
+    def start(self, what=None):
+        self.angle, self.hand = float(np.random.default_rng().uniform(0.5, 2 * np.pi - 0.5)), None
+        return "c walks along the edge of the Mandelbrot set"
+
+    def reset(self):
+        self.start()
+
+    def set_speed(self, i):
+        self.speed = self.speeds[i]
+
+    def key(self):
+        return ("julia", self.MAXIT)
+
+    def warm(self):
+        self.m.run(0.0, 0.0, self.width)
+        return [self.key()]
+
+    def c(self):
+        if self.hand is not None:
+            return self.hand
+        t = self.angle
+        p = complex(math.cos(t), math.sin(t)) / 2 - complex(math.cos(2 * t), math.sin(2 * t)) / 4
+        out = p - 0.25
+        p += 0.04 * out / abs(out) if abs(out) > 1e-9 else 0
+        return p.real, p.imag
+
+    def step(self):
+        now = time.perf_counter()
+        dt = min(0.1, now - self.last) if self.last else 1 / 60
+        self.last = now
+        if self.hand is None:
+            self.angle += self.speed * dt * (5 if math.cos(self.angle) > 0.95 else 1)  # hurry past the cusp
+        cx, cy = self.c()
+        self.m.c = (round(cx * (1 << FRAC)), round(cy * (1 << FRAC)))
+        self.counts, ms = self.m.run(0.0, 0.0, self.width)
+        self.t += dt * 60
+        return ms, 1
+
+    def cells(self):
+        return self.vw * self.vh
+
+    def image(self):
+        n = self.counts
+        rgb = RAINBOW[(np.log1p(n) * 40 + self.t * 2).astype(np.int64) % 256]
+        rgb[n >= self.MAXIT] = 0
+        return rgb
+
+    def paint(self, x, y, left):
+        if left:  # the mouse picks c, on a plane 3 wide
+            self.hand = ((x / self.vw - 0.5) * 3.0, (y / self.vh - 0.5) * 3.0 * self.vh / self.vw)
+        else:
+            self.hand = None
+
+    def press(self, e, x, y):
+        if e.key in (pygame.K_n, pygame.K_r):
+            return self.start()
+        return None
+
+    def status(self):
+        cx, cy = self.c()
+        return f"  |  c = {cx:+.4f} {cy:+.4f}i" + ("  (in your hand)" if self.hand else "")
+
+    def draw(self, r, rect):
+        r.mandel(self.counts, self.MAXIT, self.t * 0.004, rect)
+
+
 x = np.linspace(0, 2 * np.pi, 256, endpoint=False)
 RAINBOW = (np.stack([0.5 + 0.5 * np.sin(x), 0.5 + 0.5 * np.sin(x + 2.1), 0.5 + 0.5 * np.sin(x + 4.2)], -1)
            * 255).astype(np.uint8)
@@ -312,11 +399,12 @@ del x
 
 # ---------------------------------------------------------------------------------------------
 
-EFFECTS = ["life", "brain", "wire", "gray", "mandel"]
+EFFECTS = ["life", "brain", "wire", "gray", "mandel", "julia"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4), ("life", "g", 3),
-          ("brain", "soup", 1), ("gray", "bubbles", 4), ("mandel", 1, 2), ("life", "a", 4), ("wire", "soup", 1),
-          ("gray", "spirals", 3), ("mandel", 2, 3), ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
+SCENES = [("julia", None, 2), ("gray", "spirals", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "waves", 4),
+          ("life", "g", 3), ("brain", "soup", 1), ("julia", None, 3), ("gray", "bubbles", 4), ("mandel", 1, 2),
+          ("life", "a", 4), ("wire", "soup", 1), ("gray", "spirals", 3), ("julia", None, 2), ("mandel", 2, 3),
+          ("life", "l", 4), ("gray", "waves", 3), ("mandel", 3, 2)]
 
 
 def main():
@@ -367,6 +455,8 @@ def main():
                 made[name] = Life(sw, sh, dev.cols, name, args.fade)
             elif name == "gray":
                 made[name] = Reaction(sw, sh, dev.cols)
+            elif name == "julia":
+                made[name] = Julia(sw, sh, dev.cols)
             else:
                 made[name] = Fractal(sw, sh, dev.cols)
         return made[name]
@@ -386,7 +476,7 @@ def main():
         if sp is not None:
             cur.speed_i = sp
         cur.set_speed(cur.speed_i)
-        if what is not None:
+        if what is not None or name == "julia":
             say(cur.start(what))
         note["title_until"] = time.perf_counter() + 4
 
@@ -411,7 +501,7 @@ def main():
             pygame.display.flip()
             pygame.event.pump()
             switch(n, w, sp)
-            if n == "mandel":
+            if n in ("mandel", "julia"):
                 compiled.update(cur.warm())
             elif cur.key() not in compiled:
                 cur.step()
