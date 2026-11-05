@@ -11,7 +11,7 @@ openSUSE Tumbleweed and the `amdxdna` driver in the mainline kernel.
 
 | program | what it does |
 |---|---|
-| `iron/show.py` | **the show**: Life, Brian's Brain, Wireworld, Gray-Scott and a Mandelbrot dive, one window, `tab` between them, a demo mode for a party table |
+| `iron/show.py` | **the show**: Life, Brian's Brain, Wireworld, Gray-Scott and a Mandelbrot dive, one window, `tab` between them, a demo mode for a party table. The NPU computes, the Radeon iGPU draws: lit 3D chemistry, glow and bloom (`gl.py`) |
 | `iron/gray_chip.py` | Gray-Scott reaction-diffusion on 32 cores: two chemicals per cell in int16, the halos swapped every step |
 | `iron/mandel_chip.py` | Mandelbrot on 32 cores: int32 fixed point (Q28), 16 pixels per vector step |
 | `iron/life_window.py` | Life, Brian's Brain, Wireworld and the old demo fire on all 32 cores, in a window: trails, draw with the mouse, stamp patterns, a demo mode, up to 101 generations per frame |

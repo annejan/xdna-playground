@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The show: everything on 32 NPU cores in one window, made for a party table.
+"""The show: the NPU computes, the Radeon iGPU draws it, in one window made for a party table.
 
   ../env.sh python show.py --fit --demo        fullscreen, a new scene every 25 seconds
   ../env.sh python show.py                     in a window, start with Life
+  ../env.sh python show.py --cpu-render        draw with numpy + pygame instead of the GPU
 
   tab        next effect: Life, Brian's Brain, Wireworld, Gray-Scott, Mandelbrot
   1 .. 5     speed (what a step is depends on the effect; the first use of a speed compiles it)
@@ -23,10 +24,11 @@ import numpy as np
 import pygame
 
 import aie.iron as iron
+from gl import Renderer
 from gray_chip import ONE, PRESETS, Gray
 from gray_chip import seed as gray_seed
 from life_chip import ROWS, Chip
-from life_window import SPEEDS, TITLES, World, colorize, fit_world, hud, lut, place
+from life_window import FIRE, ICE, SPEEDS, TITLES, World, colorize, fit_world, hud, lut, place
 from mandel_chip import FRAC, Mandel
 from patterns import SHAPES, stamp
 from rules import feed
@@ -47,6 +49,8 @@ class Life:
         self.world = World(self.chip, self.vw, self.vh, 0.3, np.random.default_rng())
         self.speeds, self.fade, self.turn = SPEEDS, fade, 0
         self.title = TITLES[rule]
+        self.speed_i, self.bloom = 2, 1.0
+        self.lut = {"life": FIRE, "brain": ICE, "wire": FIRE}[rule]
 
     def set_speed(self, i):
         self.chip.gens = self.speeds[i]
@@ -107,6 +111,9 @@ class Life:
     def status(self):
         return ""
 
+    def draw(self, r, rect):
+        r.ca(self.world.cells[:self.vh, :self.vw], self.chip.rule, self.lut, self.fade, rect, key=self.chip.rule)
+
 
 PALETTES = {
     "coral": lut([(0.0, (4, 8, 28)), (0.3, (10, 50, 100)), (0.55, (30, 150, 170)), (0.8, (200, 235, 210)),
@@ -143,7 +150,8 @@ class Reaction:
     def __init__(self, sw, sh, cols):
         self.vw, self.vh = fit_gray(sw, sh, cols * ROWS)
         self.speeds = [11, 51, 151, 401, 801]
-        self.g = Gray(self.vw, self.vh, self.speeds[2], cols, "coral")
+        self.speed_i, self.bloom = 3, 0.45
+        self.g = Gray(self.vw, self.vh, self.speeds[self.speed_i], cols, "coral")
         self.rng = np.random.default_rng()
         self.reset()
 
@@ -195,6 +203,9 @@ class Reaction:
     def status(self):
         return f"  |  {self.g.preset}"
 
+    def draw(self, r, rect):
+        r.gray(self.v[:self.vh, :self.vw], self.g.preset, PALETTES[self.g.preset], rect)
+
 
 TARGETS = [(-0.743643887037151, 0.131825904205330), (-0.761574, -0.0847596), (-1.768778833, -0.001738996),
            (-0.77568377, 0.13646737), (-0.7746806106269039, -0.1374168856037867)]
@@ -212,7 +223,8 @@ class Fractal:
         self.vw, self.vh = sw // s, sh // s
         self.m = Mandel(self.vw, self.vh, cols)
         self.speeds = [0.995, 0.99, 0.985, 0.975, 0.96]  # zoom per frame
-        self.zoom_step = self.speeds[2]
+        self.speed_i, self.bloom = 2, 0.5
+        self.zoom_step = self.speeds[self.speed_i]
         self.t = 0
         self.target = 0
         self.start(0)
@@ -275,6 +287,9 @@ class Fractal:
     def status(self):
         return f"  |  zoom {3.2 / self.width:,.0f}x  |  maxit {self.m.maxit}"
 
+    def draw(self, r, rect):
+        r.mandel(self.counts, self.m.maxit, self.t * 0.004, rect)
+
 
 x = np.linspace(0, 2 * np.pi, 256, endpoint=False)
 RAINBOW = (np.stack([0.5 + 0.5 * np.sin(x), 0.5 + 0.5 * np.sin(x + 2.1), 0.5 + 0.5 * np.sin(x + 4.2)], -1)
@@ -285,9 +300,9 @@ del x
 
 EFFECTS = ["life", "brain", "wire", "gray", "mandel"]
 # demo scenes: (effect, start, speed index)
-SCENES = [("life", "soup", 1), ("gray", "coral", 2), ("life", "g", 2), ("mandel", 0, 2), ("brain", "soup", 0),
-          ("gray", "mitosis", 3), ("life", "a", 3), ("wire", "soup", 0), ("mandel", 1, 2), ("gray", "worms", 2),
-          ("life", "l", 3), ("mandel", 2, 2), ("gray", "spots", 3), ("life", "p", 4), ("mandel", 3, 2)]
+SCENES = [("gray", "coral", 4), ("life", "soup", 2), ("mandel", 0, 2), ("gray", "mitosis", 4), ("life", "g", 3),
+          ("brain", "soup", 1), ("gray", "worms", 3), ("mandel", 1, 2), ("life", "a", 4), ("wire", "soup", 1),
+          ("gray", "spots", 4), ("mandel", 2, 3), ("life", "l", 4), ("gray", "waves", 4), ("mandel", 3, 2)]
 
 
 def main():
@@ -297,16 +312,34 @@ def main():
                    help="show mode: a new scene every SECONDS (default 25)")
     p.add_argument("--effect", choices=EFFECTS, default="life")
     p.add_argument("--fade", type=float, default=0.93)
+    p.add_argument("--cpu-render", action="store_true", help="draw with numpy + pygame, not the GPU")
     args = p.parse_args()
+    use_gl = not args.cpu_render
 
     dev = iron.get_current_device()
     pygame.init()
     dw, dh = pygame.display.get_desktop_sizes()[0]
-    if args.fit:
-        screen = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
+    size = (dw, dh) if args.fit else (int(dw * 0.85), int(dh * 0.85))
+    flags = pygame.FULLSCREEN if args.fit else (0 if use_gl else pygame.RESIZABLE)
+    if use_gl:
+        import moderngl
+        screen = pygame.display.set_mode(size, flags | pygame.OPENGL | pygame.DOUBLEBUF, vsync=1)
+        ctx = moderngl.create_context()
+        gpu = Renderer(ctx, size)
+        gpu_name = ctx.info["GL_RENDERER"].split(" (")[0].replace("AMD ", "").replace(" Graphics", "")
     else:
-        screen = pygame.display.set_mode((int(dw * 0.85), int(dh * 0.85)), pygame.RESIZABLE)
+        screen = pygame.display.set_mode(size, flags)
     sw, sh = screen.get_size()
+
+    def text(f, line, y=8, x=8):
+        """HUD line: on the screen surface, or as a texture over the GL picture."""
+        if not use_gl:
+            return hud(screen, f, line, y=y, x=x)
+        label = f.render(line, True, (255, 240, 200))
+        box = pygame.Surface((label.get_width() + 20, label.get_height() + 10), pygame.SRCALPHA)
+        box.fill((0, 0, 0, 170))
+        box.blit(label, (10, 5))
+        gpu.text(ctx.screen, box, x, y)
     pygame.display.set_caption(f"xdna-playground: {dev.cols * ROWS} NPU cores")
     font = pygame.font.SysFont("monospace", 18, bold=True)
     big = pygame.font.SysFont("monospace", 40, bold=True)
@@ -325,8 +358,7 @@ def main():
         return made[name]
 
     cur, cur_name = effect(args.effect), args.effect
-    speed = 1
-    cur.set_speed(speed)
+    cur.set_speed(cur.speed_i)
     note = {"text": "h: help   tab: next effect   m: demo", "until": time.perf_counter() + 6,
             "title_until": time.perf_counter() + 4}
 
@@ -335,11 +367,11 @@ def main():
             note["text"], note["until"] = text, time.perf_counter() + seconds
 
     def switch(name, what=None, sp=None):
-        nonlocal cur, cur_name, speed
+        nonlocal cur, cur_name
         cur, cur_name = effect(name), name
         if sp is not None:
-            speed = sp
-        cur.set_speed(speed)
+            cur.speed_i = sp
+        cur.set_speed(cur.speed_i)
         if what is not None:
             say(cur.start(what))
         note["title_until"] = time.perf_counter() + 4
@@ -367,7 +399,10 @@ def main():
                 elif e.key == pygame.K_s:
                     single = True
                 elif e.key == pygame.K_f:
-                    pygame.display.toggle_fullscreen()
+                    if use_gl:
+                        say("fullscreen: start with --fit (the GPU window cannot switch)")
+                    else:
+                        pygame.display.toggle_fullscreen()
                 elif e.key == pygame.K_h:
                     show_help = not show_help
                 elif e.key == pygame.K_m:
@@ -375,8 +410,8 @@ def main():
                     next_scene = time.perf_counter()
                     say("demo mode " + ("on" if demo else "off"))
                 elif pygame.K_1 <= e.key <= pygame.K_5:
-                    speed = e.key - pygame.K_1
-                    cur.set_speed(speed)
+                    cur.speed_i = e.key - pygame.K_1
+                    cur.set_speed(cur.speed_i)
                 else:
                     say(cur.press(e, x, y))
 
@@ -393,7 +428,10 @@ def main():
 
         if not paused or single:
             if cur.key() not in compiled:
-                hud(screen, font, "compiling a kernel for this effect and speed ...")
+                if use_gl:
+                    ctx.screen.use()
+                    ctx.clear(0.0, 0.0, 0.0)
+                text(font, "compiling a kernel for this effect and speed ...")
                 pygame.display.flip()
                 compiled.add(cur.key())
             ms, steps = cur.step()
@@ -406,26 +444,32 @@ def main():
             rate, busy = steps_done / (now - t_rate), npu_ms / 1000 / (now - t_rate)
             steps_done, npu_ms, t_rate = 0, 0.0, now
 
-        img = cur.image()
-        surf = pygame.surfarray.make_surface(np.ascontiguousarray(img.swapaxes(0, 1)))
         r = place(screen, cur.vw, cur.vh)
-        screen.fill((0, 0, 0))
-        scale = pygame.transform.smoothscale if cur.smooth else pygame.transform.scale
-        screen.blit(scale(surf, r.size), r.topleft)
+        if use_gl:
+            gpu.begin()
+            cur.draw(gpu, tuple(r))
+            gpu.finish(ctx.screen, strength=cur.bloom)
+        else:
+            img = cur.image()
+            surf = pygame.surfarray.make_surface(np.ascontiguousarray(img.swapaxes(0, 1)))
+            screen.fill((0, 0, 0))
+            scale = pygame.transform.smoothscale if cur.smooth else pygame.transform.scale
+            screen.blit(scale(surf, r.size), r.topleft)
 
         cells = f"  |  {cur.cells() * rate / 1e9:.2f} Gcell/s" if cur.unit != "frame" else ""
-        hud(screen, font, f"{cur.title}  |  {rate:,.0f} {cur.unit}s/s  |  NPU busy {busy:4.0%}{cells}"
-                          f"{cur.status()}  |  {cur.vw}x{cur.vh} on {dev.cols * ROWS} cores"
-                          + ("  |  PAUSED" if paused else "") + ("  |  DEMO" if demo else ""))
+        drawn = f"  |  drawn by {gpu_name}" if use_gl else ""
+        text(font, f"{cur.title}  |  {rate:,.0f} {cur.unit}s/s  |  NPU busy {busy:4.0%}{cells}"
+                   f"{cur.status()}  |  {cur.vw}x{cur.vh} on {dev.cols * ROWS} NPU cores{drawn}"
+                   + ("  |  PAUSED" if paused else "") + ("  |  DEMO" if demo else ""))
         if now < note["until"]:
-            hud(screen, font, note["text"], y=44)
+            text(font, note["text"], y=44)
         if now < note["title_until"]:
-            text = f"{cur.title} on {dev.cols * ROWS} NPU cores"
-            w, h = big.size(text)
-            hud(screen, big, text, x=(screen.get_width() - w) // 2 - 10, y=screen.get_height() - h - 50)
+            line = f"{cur.title}  ·  {dev.cols * ROWS} NPU cores" + (" + GPU" if use_gl else "")
+            w, h = big.size(line)
+            text(big, line, x=(sw - w) // 2 - 10, y=sh - h - 50)
         if show_help:
             for i, line in enumerate((__doc__ or "").strip().splitlines()[2:]):
-                hud(screen, font, line, y=80 + i * 28)
+                text(font, line, y=80 + i * 28)
         pygame.display.flip()
         clock.tick(60)
     pygame.quit()
